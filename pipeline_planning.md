@@ -20,7 +20,28 @@ Pipeline([
 
 ---
 
-## Future Work
+## Iteration Plan
+
+Order of operations for improving the pipeline:
+
+1. **Data Cleaning** — fix noise before touching anything else; TF-IDF vocabulary is built from raw text, so cleaning first means the feature budget goes toward real signal
+2. **Feature Engineering / TF-IDF** — tune vectorizer params; features matter more than model choice for text classification
+3. **Model Comparison** — evaluate several classifiers using 5-fold cross-validation, ranked by macro-F1
+4. **Hyperparameter Tuning** — run `GridSearchCV` / `RandomizedSearchCV` on the top ~3 models from step 3
+
+### Evaluation Metric
+
+Primary: **macro-F1** (`scoring='f1_macro'` in `cross_val_score`)
+
+- Averages F1 per class without weighting by class size
+- Penalizes models that are strong on one class but weak on the other
+- More robust than accuracy if the hidden leaderboard test set has different class proportions
+
+Secondary: **accuracy** — kept alongside macro-F1 for direct leaderboard comparison
+
+---
+
+## Improvement Areas
 
 ### Data Cleaning
 
