@@ -9,9 +9,17 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.linear_model import LogisticRegression, SGDClassifier
+from sklearn.svm import LinearSVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.naive_bayes import MultinomialNB, ComplementNB
+from sklearn.base import clone
+from sklearn.metrics import accuracy_score, classification_report, roc_curve, auc
 from sklearn.pipeline import Pipeline
+from xgboost import XGBClassifier
+import matplotlib.pyplot as plt
 
 # =============================================================================
 # 1. BASELINE MODEL
@@ -162,4 +170,114 @@ log_result("tfidf_optimized", pipeline_tfidf_v2, X_train2, y_train2)
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
 
-##testing testing
+
+# =============================================================================
+# 3. MODEL COMPARISON
+# =============================================================================
+
+
+def plot_model_comparison(results):
+    df = pd.DataFrame(results).sort_values("f1_mean", ascending=False)
+    x = np.arange(len(df))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(
+        x - width / 2,
+        df["f1_mean"],
+        width,
+        yerr=df["f1_std"],
+        label="Macro F1",
+        capsize=4,
+    )
+    ax.bar(
+        x + width / 2,
+        df["acc_mean"],
+        width,
+        yerr=df["acc_std"],
+        label="Accuracy",
+        capsize=4,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["pipeline"], rotation=45, ha="right")
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Score")
+    ax.set_title("Model Comparison")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_roc_curves(models_dict, X_train, y_train, X_test, y_test, tfidf=None):
+    if tfidf is None:
+        tfidf = TfidfVectorizer(
+            stop_words="english",
+            max_features=5000,
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+            min_df=2,
+        )
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    for name, clf in models_dict.items():
+        pipe = Pipeline([("tfidf", clone(tfidf)), ("clf", clone(clf))])
+        pipe.fit(X_train, y_train)
+
+        if hasattr(pipe, "predict_proba"):
+            scores = pipe.predict_proba(X_test)[:, 1]
+        else:
+            scores = pipe.decision_function(X_test)
+
+        fpr, tpr, _ = roc_curve(y_test, scores)
+        roc_auc = auc(fpr, tpr)
+        ax.plot(fpr, tpr, label=f"{name} (AUC = {roc_auc:.3f})")
+
+    ax.plot([0, 1], [0, 1], "k--")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curves")
+    ax.legend(loc="lower right")
+    plt.tight_layout()
+    plt.show()
+
+
+results = []
+
+# New tfidf object with improved params
+tfidf_v2 = TfidfVectorizer(
+    stop_words="english",
+    max_features=5000,
+    ngram_range=(1, 2),
+    sublinear_tf=True,
+    min_df=2,
+)
+
+# List of models to start out with
+models = {
+    "logistic_regression": LogisticRegression(max_iter=1000),
+    "linear_svc": LinearSVC(max_iter=1000),
+    "sgd": SGDClassifier(),
+    "knn": KNeighborsClassifier(),
+    "decision_tree": DecisionTreeClassifier(),
+    "random_forest": RandomForestClassifier(),
+    "adaboost": AdaBoostClassifier(),
+    "multinomial_nb": MultinomialNB(),
+    "complement_nb": ComplementNB(),
+    "xgboost": XGBClassifier(eval_metric="logloss"),
+}
+
+# Iterate thru models, train and predict
+for name, clf in models.items():
+    pipe = Pipeline([("tfidf", tfidf_v2), ("clf", clf)])
+    log_result(name, pipe, X_train2, y_train2)
+
+# Compare results
+results_df = pd.DataFrame(results)
+print(results_df.sort_values("f1_mean", ascending=False).to_string(index=False))
+
+# Visualize comparisons
+# Will take longer for roc curves because we need to fit/predict across
+# classification thresholds for each model
+plot_model_comparison(results)
+plot_roc_curves(models, X_train2, y_train2, X_test2, y_test2)

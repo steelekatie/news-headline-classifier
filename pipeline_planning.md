@@ -25,9 +25,9 @@ Pipeline([
 Order of operations for improving the pipeline:
 
 1. **Data Cleaning** — fix noise before touching anything else; TF-IDF vocabulary is built from raw text, so cleaning first means the feature budget goes toward real signal
-2. **Feature Engineering / TF-IDF** — tune vectorizer params; features matter more than model choice for text classification
+2. **Feature Engineering / TF-IDF** — tune vectorizer params; features matter more than model choice for text classification. Note: skip dedicated TF-IDF grid search here — `pipeline_tfidf_v2` params are already solid priors, and TF-IDF params interact with model choice anyway. Defer joint TF-IDF + model tuning to step 4.
 3. **Model Comparison** — evaluate several classifiers using 5-fold cross-validation, ranked by macro-F1
-4. **Hyperparameter Tuning** — run `GridSearchCV` / `RandomizedSearchCV` on the top ~3 models from step 3
+4. **Hyperparameter Tuning** — run `GridSearchCV` / `RandomizedSearchCV` on the top ~3 models from step 3; include a few TF-IDF params (e.g. `tfidf__max_features`, `tfidf__ngram_range`) in the search to capture any model-specific TF-IDF adjustments
 
 ### Evaluation Metric
 
