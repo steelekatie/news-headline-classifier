@@ -3,6 +3,8 @@
 # =============================================================================
 
 import os
+import re
+import unicodedata
 import requests
 from bs4 import BeautifulSoup
 import numpy as np
@@ -17,7 +19,8 @@ from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score, classification_report, roc_curve, auc
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.preprocessing import FunctionTransformer
 from xgboost import XGBClassifier
 import matplotlib.pyplot as plt
 
@@ -85,10 +88,129 @@ print("Classification Report:\n", classification_report(y_test, y_pred))
 
 
 # =============================================================================
-# 2. IMPROVED PIPELINE & FEATURE ENGINEERING
+# 2. CLEANING FUNCTIONS
 # =============================================================================
 
-# Data prep, just replicate what we have above for now
+
+# Checking for possible identifiers between sources
+def pattern_summary(df, text_col, group_col, patterns):
+    df = df.copy()
+    # indicate if pattern exists
+    for name, pattern in patterns.items():
+        df[name] = df[text_col].astype(str).str.contains(pattern, na=False)
+    feature_cols = list(patterns.keys())
+    # count Trues
+    counts = df.groupby(group_col)[feature_cols].sum().T.astype(int)
+
+    # sort by diff in occurrences between nbc/fox
+    if counts.shape[1] == 2:
+        diff = (counts.iloc[:, 0] - counts.iloc[:, 1]).abs()
+        counts = counts.loc[diff.sort_values(ascending=False).index]
+
+    # add n for each source group as ref
+    totals = df.groupby(group_col).size().to_frame().T
+    totals.index = ["total_n"]
+
+    # combine to one table
+    return pd.concat([counts, totals])
+
+
+patterns = {
+    "US": "US",
+    "U.S.": "U.S.",
+    "period": r"\.",
+    "emdash": r"\u2014",
+    "colon": r":",
+    "semicolon": r";",
+    "single_quote": r"\'",
+    "starts_num": r"^\d+",
+}
+
+# table
+pattern_summary(news_df, text_col="headline", group_col="source", patterns=patterns)
+
+"""Noted:
+
+NBC style guide
+- U.S.
+- May be more likely to:
+	- Use periods
+	- Use em dashes
+	- Start heds w/ a number
+
+Fox style guide
+- US
+- May be more likely to:
+	- Use colons
+	- Use quotes
+"""
+
+
+# Data cleaning, tokenizing for models
+def repl_punct(text):
+    """
+    Returns text w/ standardized punctuation marks
+    """
+    punct_remap = {
+        "\u2013": "-",  # en dash -> hyphen
+        "\u2014": "-",  # em dash -> hyphen
+        "\u2018": "'",  # left single quote -> single
+        "\u2019": "'",  # right single quote -> single
+        "\u201c": "'",  # left double quote -> single
+        "\u201d": '"',  # right double quote -> single
+    }
+    # apply to text
+    return text.translate(str.maketrans(punct_remap))
+
+
+def repl_money(text):
+    """
+    Replaces references to monetary values with '[MONEY]',
+    allowing models to treat monetary values as a single token.
+    """
+    money_ref = r"([$£€¥]\d+(?:\.\d+)?(?:[,\d+]+)?(?:\s?(?:hundred|thousand|million|billion|trillion|k|m|b|t))?)"
+    return re.sub(money_ref, "[MONEY]", text, flags=re.IGNORECASE)
+
+
+def clean_hed(text):
+    """
+    Cleans news headlines
+    Standardizes encoding, punctuation, converts to lowercase.
+    Creates tokens for references to money, periods at end of heds.
+    Converts to lowercase and cleans up whitespace
+    """
+    if not isinstance(text, str):
+        return ""
+
+    # standardize encoding - adjust diacritics
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("utf-8")
+
+    # standardize dashes, quotes
+    text = repl_punct(text)
+
+    # replace refs to money with '[MONEY]' token
+    text = repl_money(text)
+
+    # replace periods at end of hed with '[END_PERIOD]' token
+    # we only see NBC use this format in our initial sample
+    text = re.sub(r"\.\s*$", " [ENDPERIOD]", text)
+
+    # everything to lower
+    text = str(text).lower()
+
+    # keep letters, numbers, spaces, apostrophes, hyphens, periods, brackets, colons
+    text = re.sub(r"[^a-z0-9\s'\-\.\[\]:]", " ", text)
+
+    # fix whitespace
+    text = " ".join(text.split())
+    return text
+
+
+# =============================================================================
+# 3. DATA PREP & FEATURE-ENGINEERING BUILDING BLOCKS
+# =============================================================================
+
+# Recreate news_df to avoid potential issues caused in initial EDA
 news_df2 = pd.read_csv("data/base_scraped_headlines.csv")
 news_df2 = news_df2.dropna(subset=["headline", "source"])
 
@@ -102,81 +224,140 @@ X_train2, X_test2, y_train2, y_test2 = train_test_split(
     random_state=42,
 )
 
-# Build simple pipeline logic, we can iterate on this
-pipeline = Pipeline(
+# All-in one transformer for data cleaning
+clean_transform = FunctionTransformer(lambda x: x.apply(clean_hed))
+
+# word-level branch -- will capture tokens
+word_branch = TfidfVectorizer(
+    analyzer="word",
+    token_pattern=r"\[?[\w]{2,}\]?",
+    ngram_range=(1, 2),
+    max_features=2500,  # limit features to speed up our testing
+)
+
+# will see 3, 4, 5 character combos for non-tokens
+char_branch = TfidfVectorizer(
+    analyzer="char_wb",
+    ngram_range=(3, 5),
+    max_features=2500,  # limit features to speed up our testing
+)
+
+# merge for hybrid pipeline later on
+combined_branches = FeatureUnion(
     [
-        (
-            "tfidf",
-            TfidfVectorizer(
-                stop_words="english",
-                max_features=100,
-            ),
-        ),
-        ("clf", LogisticRegression(max_iter=100)),
+        ("words", word_branch),
+        ("chars", char_branch),
     ]
 )
 
 
-# Test training/predicting using the pipline
-pipeline.fit(X_train2, y_train2)
-y_pred2 = pipeline.predict(X_test2)
+# =============================================================================
+# 4. PIPELINE DEVELOPMENT & EVALUATION
+# =============================================================================
 
-print(f"Accuracy: {accuracy_score(y_test2, y_pred2):.4f}")
-print("Classification Report:\n", classification_report(y_test2, y_pred2))
+# Different permutations of pipelines to iterate thru
+pipelines = {
+    "Baseline": Pipeline(
+        [
+            ("tfidf", TfidfVectorizer(stop_words="english", max_features=100)),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+    "Cleaned": Pipeline(
+        [
+            ("cleaning", clean_transform),
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    stop_words="english",
+                    max_features=100,
+                    # optional [] wrappers for tokens
+                    # keep hyphenated words together
+                    # allow for quotes, colons, hyphens
+                    # 2 or more chars
+                    token_pattern=r"\[?[\w]{2,}\]?",
+                ),
+            ),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+    "Optimized_v2": Pipeline(
+        [
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    stop_words="english",
+                    max_features=5000,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True,
+                ),
+            ),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+    "Optimized_v2_tokenized": Pipeline(
+        [
+            ("cleaning", clean_transform),
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    stop_words="english",
+                    max_features=5000,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True,
+                    min_df=2,
+                    token_pattern=r"\[?[\w]{2,}\]?",
+                ),
+            ),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+    "V3_char_grams": Pipeline(
+        [
+            ("cleaning", clean_transform),
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    max_features=5000,
+                    sublinear_tf=True,
+                    analyzer="char_wb",
+                    ngram_range=(3, 5),
+                    min_df=2,
+                ),
+            ),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+    "Hybrid": Pipeline(
+        [
+            ("cleaning", clean_transform),
+            ("branches", combined_branches),
+            ("clf", LogisticRegression(max_iter=100)),
+        ]
+    ),
+}
+
 
 # Helper function to log results as we iterate on new pipelines/models
 # Using F1 score as primary metric, accuracy on the side
-results = []
+def eval_results(pipeline_dictionary, X, y, cv=5):
+    results = []
+    for name, pipe in pipeline_dictionary.items():
+        f1 = cross_val_score(pipe, X, y, cv=cv, scoring="f1_macro")
+        acc = cross_val_score(pipe, X, y, cv=cv, scoring="accuracy")
+        results.append(
+            {
+                "pipeline": name,
+                "f1_mean": round(f1.mean(), 4),
+                "f1_std": round(f1.std(), 4),
+                "acc_mean": round(acc.mean(), 4),
+                "acc_std": round(acc.std(), 4),
+            }
+        )
+    return pd.DataFrame(results).sort_values("f1_mean", ascending=False)
 
 
-def log_result(name, pipe, X, y, cv=5):
-    f1 = cross_val_score(pipe, X, y, cv=cv, scoring="f1_macro")
-    acc = cross_val_score(pipe, X, y, cv=cv, scoring="accuracy")
-    results.append(
-        {
-            "pipeline": name,
-            "f1_mean": round(f1.mean(), 4),
-            "f1_std": round(f1.std(), 4),
-            "acc_mean": round(acc.mean(), 4),
-            "acc_std": round(acc.std(), 4),
-        }
-    )
-
-
-# Test logging function on baseline model
-log_result("baseline", pipeline, X_train2, y_train2)
-
-# New pipeline using improved TF-IDF params
-pipeline_tfidf_v2 = Pipeline(
-    [
-        (
-            "tfidf",
-            TfidfVectorizer(
-                stop_words="english",
-                max_features=5000,
-                ngram_range=(1, 2),
-                sublinear_tf=True,
-                min_df=2,
-            ),
-        ),
-        ("clf", LogisticRegression(max_iter=100)),
-    ]
-)
-
-log_result("tfidf_optimized", pipeline_tfidf_v2, X_train2, y_train2)
-
-
-# Compare two pipelines so far
-results_df = pd.DataFrame(results)
-print(results_df.to_string(index=False))
-
-
-# =============================================================================
-# 3. MODEL COMPARISON
-# =============================================================================
-
-
-def plot_model_comparison(results):
+def plot_model_comparison(results, title="Model Comparison"):
     df = pd.DataFrame(results).sort_values("f1_mean", ascending=False)
     x = np.arange(len(df))
     width = 0.35
@@ -202,7 +383,7 @@ def plot_model_comparison(results):
     ax.set_xticklabels(df["pipeline"], rotation=45, ha="right")
     ax.set_ylim(0, 1)
     ax.set_ylabel("Score")
-    ax.set_title("Model Comparison")
+    ax.set_title(title)
     ax.legend()
     plt.tight_layout()
     plt.show()
@@ -242,16 +423,25 @@ def plot_roc_curves(models_dict, X_train, y_train, X_test, y_test, tfidf=None):
     plt.show()
 
 
-results = []
+# Compare pipelines
+results_df = eval_results(pipelines, X_train2, y_train2)
+print(results_df.to_string(index=False))
 
-# New tfidf object with improved params
-tfidf_v2 = TfidfVectorizer(
-    stop_words="english",
-    max_features=5000,
-    ngram_range=(1, 2),
-    sublinear_tf=True,
-    min_df=2,
-)
+# Visualize comparisons
+plot_model_comparison(results_df, title="Pipeline Comparison")
+
+
+# =============================================================================
+# 5. MULTI-CLASSIFIER COMPARISON
+# =============================================================================
+
+# Updated based on results from last section
+BEST_PIPELINE = "Hybrid"
+
+# Pull the cleaning and feature extraction steps directly from the best pipeline,
+# so each of the 10 models below runs through the exact same preprocessing.
+best_cleaning = pipelines[BEST_PIPELINE].named_steps["cleaning"]
+best_features = pipelines[BEST_PIPELINE].named_steps["branches"]
 
 # List of models to start out with
 models = {
@@ -268,16 +458,59 @@ models = {
 }
 
 # Iterate thru models, train and predict
-for name, clf in models.items():
-    pipe = Pipeline([("tfidf", tfidf_v2), ("clf", clf)])
-    log_result(name, pipe, X_train2, y_train2)
+classifier_pipelines = {
+    name: Pipeline(
+        [("cleaning", best_cleaning), ("branches", best_features), ("clf", clf)]
+    )
+    for name, clf in models.items()
+}
 
 # Compare results
-results_df = pd.DataFrame(results)
-print(results_df.sort_values("f1_mean", ascending=False).to_string(index=False))
+results_df2 = eval_results(classifier_pipelines, X_train2, y_train2)
+print(results_df2.to_string(index=False))
 
 # Visualize comparisons
 # Will take longer for roc curves because we need to fit/predict across
 # classification thresholds for each model
-plot_model_comparison(results)
+plot_model_comparison(results_df2, title="Classifier Comparison")
 plot_roc_curves(models, X_train2, y_train2, X_test2, y_test2)
+
+
+# =============================================================================
+# 6. TOP FEATURES
+# =============================================================================
+
+# Extract most predictive features from different pipelines
+top_models = ["Hybrid", "V3_char_grams", "Optimized_v2_tokenized"]
+tables = []
+
+for name in top_models:
+    p = pipelines[name]  # pull this particular pipeline
+    p.fit(X_train2, y_train2)  # fit to data
+
+    if "branches" in p.named_steps:  # if branches exist (hybrid), diff command
+        feats = p.named_steps["branches"].get_feature_names_out()
+    else:
+        feats = p.named_steps[
+            "tfidf"
+        ].get_feature_names_out()  # otherwise should be same for all
+
+    coefs = p.named_steps["clf"].coef_[0]  # pull coefs for features
+
+    feat_df = (
+        pd.DataFrame(
+            {
+                f"{name}_Feature": feats,
+                f"{name}_Weight": coefs,
+                "Absolute_wt": np.abs(coefs),
+            }
+        )
+        .sort_values(by="Absolute_wt", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+
+    tables.append(feat_df[[f"{name}_Feature", f"{name}_Weight"]])
+
+horiz = pd.concat(tables, axis=1)  # side-by-side
+print(horiz.to_string())
