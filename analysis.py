@@ -19,7 +19,9 @@ from sklearn.ensemble import (
     RandomForestClassifier,
     AdaBoostClassifier,
     VotingClassifier,
+    StackingClassifier,
 )
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score, classification_report, roc_curve, auc
@@ -898,24 +900,73 @@ best_sgd = sgd_grid_search.best_estimator_.named_steps["clf"]
 # =============================================================================
 # 7. ENSEMBLE METHODS
 # =============================================================================
+#
+# SECTION SUMMARY:
+#   Three ensemble strategies built on top of the 5 tuned classifiers from
+#   Section 6, all using the Hybrid_v2_style feature pipeline with optimal
+#   params fixed from Section 4c (max_features=5000, words (1,2), chars (4,6)).
+#   All pipelines are cloned from pipelines[BEST_PIPELINE] to ensure correct
+#   feature params — NOT built from word_char_style_branch directly.
 
-# Soft-voting ensemble: trust LR 2x more than XGB (it outperforms individually)
-pipelines["Ensemble_LR_XGB"] = Pipeline(
-    [
-        ("branches", word_char_style_branch),
-        ("scaler", MaxAbsScaler()),
-        (
-            "clf",
-            VotingClassifier(
-                estimators=[("lr", best_lr), ("xgb", best_xgb)],
-                voting="soft",
-                weights=[2, 1],
-                n_jobs=-1,
-            ),
-        ),
-    ]
+# ── 7a. Soft voting — 4 proba models (LR + SGD + XGB + RF) ──────────────────
+# LinearSVC excluded here since it lacks predict_proba
+
+pipelines["Ensemble_Soft_4"] = clone(pipelines[BEST_PIPELINE]).set_params(
+    clf=VotingClassifier(
+        estimators=[
+            ("lr", best_lr),
+            ("sgd", best_sgd),
+            ("xgb", best_xgb),
+            ("rf", best_rf),
+        ],
+        voting="soft",
+        n_jobs=-1,
+    )
 )
 
-ens_eval = quick_eval("Ensemble_LR_XGB", pipelines["Ensemble_LR_XGB"], X_train, y_train)
-print(ens_eval)
-# Result: F1 = 0.8004, acc = 0.8021
+# ── 7b. Soft voting — all 5 (CalibratedClassifierCV wraps LinearSVC) ─────────
+
+cal_lsvc = CalibratedClassifierCV(best_lsvc, cv=5)
+pipelines["Ensemble_Soft_5"] = clone(pipelines[BEST_PIPELINE]).set_params(
+    clf=VotingClassifier(
+        estimators=[
+            ("lr", best_lr),
+            ("sgd", best_sgd),
+            ("xgb", best_xgb),
+            ("rf", best_rf),
+            ("lsvc", cal_lsvc),
+        ],
+        voting="soft",
+        n_jobs=-1,
+    )
+)
+
+# ── 7c. Stacking — all 5 base models → LR meta-learner ───────────────────────
+# stack_method="auto": predict_proba for LR/SGD/RF/XGB, decision_function for LinearSVC
+
+pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
+    clf=StackingClassifier(
+        estimators=[
+            ("lr", best_lr),
+            ("lsvc", best_lsvc),
+            ("sgd", best_sgd),
+            ("xgb", best_xgb),
+            ("rf", best_rf),
+        ],
+        final_estimator=LogisticRegression(C=1, max_iter=1000, random_state=RANDOM_STATE),
+        cv=5,
+        stack_method="auto",
+        n_jobs=-1,
+        passthrough=False,
+    )
+)
+
+# ── 7d. Evaluate and cache all ensembles ─────────────────────────────────────
+
+ensemble_results = cached_eval(
+    "cache/ensemble_results.csv",
+    {k: v for k, v in pipelines.items() if k.startswith("Ensemble_")},
+    X_train,
+    y_train,
+)
+print(ensemble_results.to_string(index=False))
