@@ -907,6 +907,11 @@ best_sgd = sgd_grid_search.best_estimator_.named_steps["clf"]
 #   params fixed from Section 4c (max_features=5000, words (1,2), chars (4,6)).
 #   All pipelines are cloned from pipelines[BEST_PIPELINE] to ensure correct
 #   feature params — NOT built from word_char_style_branch directly.
+#
+# FINDINGS:
+#   Stacking edges out soft voting (F1=0.8032 vs 0.8028), but the margin is
+#   negligible. Adding calibrated LinearSVC (Soft_5) slightly hurts vs. the
+#   4-model soft vote — calibration noise outweighs its contribution.
 
 # ── 7a. Soft voting — 4 proba models (LR + SGD + XGB + RF) ──────────────────
 # LinearSVC excluded here since it lacks predict_proba
@@ -941,7 +946,7 @@ pipelines["Ensemble_Soft_5"] = clone(pipelines[BEST_PIPELINE]).set_params(
     )
 )
 
-# ── 7c. Stacking — all 5 base models → LR meta-learner ───────────────────────
+# ── 7c. Stacking — all 5 base models --> LR meta-learner ───────────────────────
 # stack_method="auto": predict_proba for LR/SGD/RF/XGB, decision_function for LinearSVC
 
 pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
@@ -953,7 +958,9 @@ pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
             ("xgb", best_xgb),
             ("rf", best_rf),
         ],
-        final_estimator=LogisticRegression(C=1, max_iter=1000, random_state=RANDOM_STATE),
+        final_estimator=LogisticRegression(
+            C=1, max_iter=1000, random_state=RANDOM_STATE
+        ),
         cv=5,
         stack_method="auto",
         n_jobs=-1,
@@ -970,3 +977,28 @@ ensemble_results = cached_eval(
     y_train,
 )
 print(ensemble_results.to_string(index=False))
+#        pipeline  f1_mean  f1_std  acc_mean  acc_std
+#  Ensemble_Stack   0.8032  0.0238    0.8048   0.0240
+# Ensemble_Soft_4   0.8028  0.0237    0.8044   0.0240
+# Ensemble_Soft_5   0.8002  0.0246    0.8017   0.0247
+
+# ── 7e. Visual comparison: tuned models vs. ensembles ────────────────────────
+
+tuned_pipelines = {
+    "logistic_regression": lr_grid_search.best_estimator_,
+    "linear_svc": lsvc_grid_search.best_estimator_,
+    "sgd": sgd_grid_search.best_estimator_,
+    "xgboost": xgb_grid_search.best_estimator_,
+    "random_forest": rf_grid_search.best_estimator_,
+}
+
+tuned_eval = cached_eval("cache/tuned_eval.csv", tuned_pipelines, X_train, y_train)
+
+comparison_results = pd.concat([tuned_eval, ensemble_results], ignore_index=True)
+plot_f1_acc_comparison(comparison_results)
+
+comparison_pipelines = {
+    **tuned_pipelines,
+    **{k: v for k, v in pipelines.items() if k.startswith("Ensemble_")},
+}
+plot_roc_curves(comparison_pipelines, X_train, y_train, X_test, y_test)
