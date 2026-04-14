@@ -26,6 +26,7 @@ from sklearn.metrics import accuracy_score, classification_report, roc_curve, au
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.preprocessing import FunctionTransformer, MaxAbsScaler
 from xgboost import XGBClassifier
+import joblib
 import matplotlib.pyplot as plt
 
 # =============================================================================
@@ -67,8 +68,13 @@ else:
 # (80% train, 20% test)
 news_df_base = news_df_base.dropna(subset=["headline", "source"])
 
+RANDOM_STATE = 42
+
 X_train_base, X_test_base, y_train_base, y_test_base = train_test_split(
-    news_df_base["headline"], news_df_base["source"], test_size=0.2, random_state=42
+    news_df_base["headline"],
+    news_df_base["source"],
+    test_size=0.2,
+    random_state=RANDOM_STATE,
 )
 
 
@@ -82,7 +88,7 @@ X_test_tfidf = vectorizer.transform(X_test_base)
 
 
 # Train base model
-model = LogisticRegression(max_iter=100)
+model = LogisticRegression(max_iter=100, random_state=RANDOM_STATE)
 model.fit(X_train_tfidf, y_train_base)
 
 y_pred = model.predict(X_test_tfidf)
@@ -241,11 +247,16 @@ X_train, X_test, y_train, y_test = train_test_split(
     news_df["headline"],
     news_df["label"],
     test_size=0.2,
-    random_state=42,
+    random_state=RANDOM_STATE,
 )
 
+
 # All-in one transformer for data cleaning
-clean_transform = FunctionTransformer(lambda x: x.apply(clean_hed))
+def apply_clean_hed(x):
+    return x.apply(clean_hed)
+
+
+clean_transform = FunctionTransformer(apply_clean_hed)
 
 # word-level branch -- will capture tokens
 word_branch = TfidfVectorizer(
@@ -288,16 +299,13 @@ def extract_style(series):
     return features.values
 
 
+def style_feature_names(self, input_features):
+    return ["len", "n_caps", "colon", "period", "U.S.", "US"]
+
+
 style_branch = FunctionTransformer(
     extract_style,
-    feature_names_out=lambda self, input_features: [
-        "len",
-        "n_caps",
-        "colon",
-        "period",
-        "U.S.",
-        "US",
-    ],
+    feature_names_out=style_feature_names,
 )
 
 # merge text and style branches -- used in Hybrid_v2_style
@@ -346,6 +354,24 @@ def eval_results(pipeline_dictionary, X, y, cv=5):
         quick_eval(name, pipe, X, y, cv) for name, pipe in pipeline_dictionary.items()
     ]
     return pd.concat(results, ignore_index=True).sort_values("f1_mean", ascending=False)
+
+
+def cached_grid_search(cache_path, grid_search, X, y):
+    if os.path.exists(cache_path):
+        return joblib.load(cache_path)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    grid_search.fit(X, y)
+    joblib.dump(grid_search, cache_path)
+    return grid_search
+
+
+def cached_eval(cache_path, pipeline_dictionary, X, y, cv=5):
+    if os.path.exists(cache_path):
+        return pd.read_csv(cache_path)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    results = eval_results(pipeline_dictionary, X, y, cv)
+    results.to_csv(cache_path, index=False)
+    return results
 
 
 def plot_f1_acc_comparison(results):
@@ -411,7 +437,7 @@ pipelines = {
     "Baseline": Pipeline(
         [
             ("tfidf", TfidfVectorizer(stop_words="english", max_features=100)),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     "Cleaned": Pipeline(
@@ -429,7 +455,7 @@ pipelines = {
                     token_pattern=r"\[?[\w]{2,}\]?",
                 ),
             ),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     "Optimized_v2": Pipeline(
@@ -443,7 +469,7 @@ pipelines = {
                     sublinear_tf=True,
                 ),
             ),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     "Optimized_v2_tokenized": Pipeline(
@@ -460,7 +486,7 @@ pipelines = {
                     token_pattern=r"\[?[\w]{2,}\]?",
                 ),
             ),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     "V3_char_grams": Pipeline(
@@ -476,14 +502,14 @@ pipelines = {
                     min_df=2,
                 ),
             ),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     "Hybrid": Pipeline(
         [
             ("cleaning", clean_transform),
             ("branches", combined_branches),
-            ("clf", LogisticRegression(max_iter=100)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     # Hybrid with tuned hyperparameters (larger vocab, wider char n-grams)
@@ -515,7 +541,7 @@ pipelines = {
                     ]
                 ),
             ),
-            ("clf", LogisticRegression(max_iter=100, random_state=42)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
     # Hybrid with word, char, AND style features -- no clean_transform
@@ -524,14 +550,16 @@ pipelines = {
         [
             ("branches", word_char_style_branch),
             ("scaler", MaxAbsScaler()),
-            ("clf", LogisticRegression(max_iter=100, random_state=42, C=1)),
+            ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
 }
 
 # Compare pipelines
-results_df = eval_results(pipelines, X_train, y_train)
-print(results_df.to_string(index=False))
+pipeline_results = cached_eval(
+    "cache/pipeline_results.csv", pipelines, X_train, y_train
+)
+print(pipeline_results.to_string(index=False))
 
 #                pipeline  f1_mean  f1_std  acc_mean  acc_std
 #         Hybrid_v2_style   0.7901  0.0203    0.7920   0.0200
@@ -544,94 +572,15 @@ print(results_df.to_string(index=False))
 #                Baseline   0.6804  0.0194    0.6891   0.0171
 
 # Visualize comparisons
-plot_f1_acc_comparison(results_df)
+plot_f1_acc_comparison(pipeline_results)
 
-# --- 4b. Hyperparameter Tuning on Best Pipeline --------------------------------
-
-# Grid search on Hybrid_v2_style
-hybrid_v2_param_grid = {
-    # how many words to keep
-    "branches__text__words__max_features": [1000, 2500, 5000],
-    # number of words to group
-    "branches__text__words__ngram_range": [(1, 1), (1, 2)],
-    # character fragment lengths
-    "branches__text__chars__ngram_range": [(3, 5), (4, 6)],
-}
-
-hybrid_v2_grid_search = GridSearchCV(
-    pipelines["Hybrid_v2_style"],
-    hybrid_v2_param_grid,
-    cv=5,
-    scoring="f1_macro",
-    n_jobs=-1,
-)
-hybrid_v2_grid_search.fit(X_train, y_train)
-print(f"Hybrid_v2_style - Best F1: {hybrid_v2_grid_search.best_score_:.4f}")
-print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}")
-# Result: F1 = 0.7935 | max_features=5000, words (1,2), chars (4,6)
-
-
-# =============================================================================
-# 5. CLASSIFIER SWEEP ON BEST PIPELINE
-# =============================================================================
-#
-# SECTION SUMMARY:
-#   Swap out the classifier on the best-performing feature pipeline (Hybrid_v2_style
-#   with tuned params from 4b) across a range of models to find the best classifier.
-#
-# FINDINGS:
-#   #________
-
-# Rebuild Hybrid_v2_style with optimal params from 4b grid search
-BEST_PIPELINE = "Hybrid_v2_style"
-pipelines[BEST_PIPELINE] = clone(pipelines[BEST_PIPELINE]).set_params(
-    **hybrid_v2_grid_search.best_params_
-)
-print(
-    "Active params on best pipeline:",
-    {k: pipelines[BEST_PIPELINE].get_params()[k] for k in hybrid_v2_param_grid},
-)
-
-# List of models to start out with
-models = {
-    "logistic_regression": LogisticRegression(),
-    "linear_svc": LinearSVC(),
-    "sgd": SGDClassifier(),
-    "knn": KNeighborsClassifier(),
-    "decision_tree": DecisionTreeClassifier(),
-    "random_forest": RandomForestClassifier(),
-    "adaboost": AdaBoostClassifier(),
-    "multinomial_nb": MultinomialNB(),
-    "complement_nb": ComplementNB(),
-    "xgboost": XGBClassifier(),
-}
-
-# Iterate thru models, train and predict
-classifier_pipelines = {
-    name: clone(pipelines[BEST_PIPELINE]).set_params(clf=clf)
-    for name, clf in models.items()
-}
-
-# Compare results
-results_df2 = eval_results(classifier_pipelines, X_train, y_train)
-print(results_df2.to_string(index=False))
-
-# Visualize comparisons
-# Will take longer for roc curves because we need to fit/predict across
-# classification thresholds for each model
-plot_f1_acc_comparison(results_df2)
-plot_roc_curves(classifier_pipelines, X_train, y_train, X_test, y_test)
-
-
-# =============================================================================
-# 6. TOP FEATURES
-# =============================================================================
+# --- 4b. Top Features ---------------------------------------------------------
 
 # Extract most predictive features from different pipelines
-top_models = ["Hybrid_v1", "Hybrid_v2_style", "Optimized_v2_tokenized", "V3_char_grams"]
+top_pipelines = ["Hybrid_v2_style", "Hybrid_v1", "Optimized_v2_tokenized", "Hybrid"]
 tables = []
 
-for name in top_models:
+for name in top_pipelines:
     p = pipelines[name]  # pull this particular pipeline
     p.fit(X_train, y_train)  # fit to data
 
@@ -661,56 +610,294 @@ for name in top_models:
 horiz = pd.concat(tables, axis=1)  # side-by-side
 print(horiz.to_string())
 
+# Hybrid_v2_style_Feature  Hybrid_v2_style_Weight Hybrid_v1_Feature  Hybrid_v1_Weight Optimized_v2_tokenized_Feature  Optimized_v2_tokenized_Weight Hybrid_Feature  Hybrid_Weight
+# 0              style__len                3.350485        words__jan         -2.025015                            jan                      -3.424734      words__us       2.389302
+# 1           style__period               -1.752561        chars__ a          -1.683278                           best                      -2.976003     words__jan      -1.869728
+# 2               style__US                1.708950        words__cnn          1.502579                    [endperiod]                      -2.694165     chars__ a       -1.825240
+# 3            style__colon                1.675516       chars__ us           1.454715                           gaza                      -2.432246     words__cnn       1.658027
+# 4        text__chars__ a                -1.649641      chars__ and          -1.375990                          biden                       2.381995     chars__s'        1.593260
+# 5       text__chars__ dem                1.440520       chars__ and         -1.370195                         israel                      -2.093440     words__and      -1.511618
+# 6    text__words__and the                1.305231       chars__the          -1.332073                            cnn                       2.051903     chars__e'        1.405264
+# 7        text__words__dem                1.218429      chars__ the          -1.291582                       election                      -1.940925     chars__n.       -1.394808
+# 8        text__words__cnn                1.201619       words__gaza         -1.268110                       american                       1.714240     chars__ u.      -1.341437
+# 9           style__n_caps                1.171434       chars__ the         -1.240809                      netanyahu                      -1.661681     chars__s:        1.322135
+
+# --- 4c. Hyperparameter Tuning on Best Pipeline --------------------------------
+
+# Grid search on Hybrid_v2_style
+hybrid_v2_param_grid = {
+    # how many words to keep
+    "branches__text__words__max_features": [1000, 2500, 5000],
+    # number of words to group
+    "branches__text__words__ngram_range": [(1, 1), (1, 2)],
+    # character fragment lengths
+    "branches__text__chars__ngram_range": [(3, 5), (4, 6)],
+}
+
+hybrid_v2_grid_search = GridSearchCV(
+    pipelines["Hybrid_v2_style"],
+    hybrid_v2_param_grid,
+    cv=5,
+    scoring="f1_macro",
+    n_jobs=-1,
+)
+hybrid_v2_grid_search = cached_grid_search(
+    "cache/hybrid_v2_grid_search.pkl", hybrid_v2_grid_search, X_train, y_train
+)
+print(f"Hybrid_v2_style - Best F1: {hybrid_v2_grid_search.best_score_:.4f}")
+print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}")
+# Result: F1 = 0.7935 | max_features=5000, words (1,2), chars (4,6)
+
+
+# =============================================================================
+# 5. CLASSIFIER SWEEP ON BEST PIPELINE
+# =============================================================================
+#
+# SECTION SUMMARY:
+#   Swap out the classifier on the best-performing feature pipeline (Hybrid_v2_style
+#   with tuned params from 4b) across a range of models to find the best classifier.
+#
+# FINDINGS:
+#   Logistic Regression wins outright at F1=0.7935/acc=0.7954, matching the grid
+#   search ceiling. Linear SVC and XGBoost follow. KNN and Decision Tree lag.
+
+# Rebuild Hybrid_v2_style with optimal params from 4b grid search
+BEST_PIPELINE = "Hybrid_v2_style"
+pipelines[BEST_PIPELINE] = clone(pipelines[BEST_PIPELINE]).set_params(
+    **hybrid_v2_grid_search.best_params_
+)
+print(
+    "Active params on best pipeline:",
+    {k: pipelines[BEST_PIPELINE].get_params()[k] for k in hybrid_v2_param_grid},
+)
+
+# List of models to start out with
+models = {
+    "logistic_regression": LogisticRegression(random_state=RANDOM_STATE),
+    "linear_svc": LinearSVC(random_state=RANDOM_STATE),
+    "sgd": SGDClassifier(random_state=RANDOM_STATE),
+    "knn": KNeighborsClassifier(),
+    "decision_tree": DecisionTreeClassifier(random_state=RANDOM_STATE),
+    "random_forest": RandomForestClassifier(random_state=RANDOM_STATE),
+    "adaboost": AdaBoostClassifier(random_state=RANDOM_STATE),
+    "multinomial_nb": MultinomialNB(),
+    "complement_nb": ComplementNB(),
+    "xgboost": XGBClassifier(random_state=RANDOM_STATE),
+}
+
+# Iterate thru models, train and predict
+classifier_pipelines = {
+    name: clone(pipelines[BEST_PIPELINE]).set_params(clf=clf)
+    for name, clf in models.items()
+}
+
+# Compare results
+classifier_results = cached_eval(
+    "cache/classifier_results.csv", classifier_pipelines, X_train, y_train
+)
+print(classifier_results.to_string(index=False))
+
+#            pipeline  f1_mean  f1_std  acc_mean  acc_std
+# logistic_regression   0.7935  0.0165    0.7954   0.0170
+#          linear_svc   0.7850  0.0092    0.7871   0.0097
+#       random_forest   0.7847  0.0057    0.7871   0.0059
+#             xgboost   0.7815  0.0172    0.7833   0.0176
+#                 sgd   0.7765  0.0198    0.7777   0.0195
+#       complement_nb   0.7703  0.0260    0.7706   0.0262
+#      multinomial_nb   0.7702  0.0228    0.7706   0.0230
+#            adaboost   0.7236  0.0060    0.7262   0.0051
+#       decision_tree   0.6874  0.0290    0.6902   0.0288
+#                 knn   0.6259  0.0497    0.6617   0.0287
+
+# Visualize comparisons
+plot_f1_acc_comparison(classifier_results)
+plot_roc_curves(classifier_pipelines, X_train, y_train, X_test, y_test)
+
+
+# =============================================================================
+# 6. HYPERPARAMETER TUNING — TOP 5 CLASSIFIERS
+# =============================================================================
+#
+# SECTION SUMMARY:
+#   Grid-search the classifier hyperparameters for the five best models from
+#   Section 5 (LR, LinearSVC, RF, XGBoost, SGD), all on the Hybrid_v2_style
+#   feature pipeline with optimal feature params fixed from Section 4b.
+#   Best estimators are stored as best_lr / best_lsvc / best_rf / best_xgb /
+#   best_sgd for use in Section 7 ensembles.
+
+# Base pipeline to clone for each classifier (features already tuned in 4b)
+base_pipeline = clone(pipelines[BEST_PIPELINE])
+print(
+    "Base pipeline params:",
+    {k: v for k, v in base_pipeline.get_params().items() if not k.startswith("clf")},
+)
+
+# ── 6a. Logistic Regression ──────────────────────────────────────────────────
+
+lr_tune_pipeline = clone(base_pipeline).set_params(
+    clf=LogisticRegression(random_state=RANDOM_STATE)
+)
+
+lr_param_grid = {
+    "clf__C": [0.01, 0.1, 1, 10, 100],
+    "clf__solver": ["lbfgs", "saga"],
+    "clf__max_iter": [1000],
+}
+
+lr_grid_search = GridSearchCV(
+    lr_tune_pipeline, lr_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+)
+lr_grid_search = cached_grid_search(
+    "cache/lr_grid_search.pkl", lr_grid_search, X_train, y_train
+)
+print(f"Best LR F1:     {lr_grid_search.best_score_:.4f}")
+print(f"Best LR Params: {lr_grid_search.best_params_}")
+
+# ── 6b. Linear SVC ───────────────────────────────────────────────────────────
+
+lsvc_tune_pipeline = clone(base_pipeline).set_params(
+    clf=LinearSVC(random_state=RANDOM_STATE)
+)
+
+lsvc_param_grid = {
+    "clf__C": [0.01, 0.1, 1, 10, 100],
+    "clf__loss": ["hinge", "squared_hinge"],
+    "clf__max_iter": [2000],
+}
+
+lsvc_grid_search = GridSearchCV(
+    lsvc_tune_pipeline, lsvc_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+)
+lsvc_grid_search = cached_grid_search(
+    "cache/lsvc_grid_search.pkl", lsvc_grid_search, X_train, y_train
+)
+print(f"Best LinearSVC F1:     {lsvc_grid_search.best_score_:.4f}")
+print(f"Best LinearSVC Params: {lsvc_grid_search.best_params_}")
+
+# ── 6c. Random Forest ────────────────────────────────────────────────────────
+
+rf_tune_pipeline = clone(base_pipeline).set_params(
+    clf=RandomForestClassifier(random_state=RANDOM_STATE)
+)
+
+rf_param_grid = {
+    "clf__n_estimators": [100, 200, 300],
+    "clf__max_depth": [None, 10, 20],
+    "clf__min_samples_leaf": [1, 2, 4],
+    "clf__max_features": ["sqrt", "log2"],
+}
+
+rf_grid_search = GridSearchCV(
+    rf_tune_pipeline, rf_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+)
+rf_grid_search = cached_grid_search(
+    "cache/rf_grid_search.pkl", rf_grid_search, X_train, y_train
+)
+print(f"Best RF F1:     {rf_grid_search.best_score_:.4f}")
+print(f"Best RF Params: {rf_grid_search.best_params_}")
+
+# ── 6d. XGBoost ──────────────────────────────────────────────────────────────
+
+xgb_tune_pipeline = clone(base_pipeline).set_params(
+    clf=XGBClassifier(eval_metric="logloss", random_state=RANDOM_STATE)
+)
+
+xgb_param_grid = {
+    "clf__n_estimators": [100, 200, 300],
+    "clf__learning_rate": [0.05, 0.1, 0.2],
+    "clf__max_depth": [3, 5, 7],
+    "clf__subsample": [0.8, 1.0],
+    "clf__colsample_bytree": [0.8, 1.0],
+}
+
+xgb_grid_search = GridSearchCV(
+    xgb_tune_pipeline, xgb_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+)
+xgb_grid_search = cached_grid_search(
+    "cache/xgb_grid_search.pkl", xgb_grid_search, X_train, y_train
+)
+print(f"Best XGB F1:     {xgb_grid_search.best_score_:.4f}")
+print(f"Best XGB Params: {xgb_grid_search.best_params_}")
+
+# ── 6e. SGD ──────────────────────────────────────────────────────────────────
+
+sgd_tune_pipeline = clone(base_pipeline).set_params(
+    clf=SGDClassifier(random_state=RANDOM_STATE)
+)
+
+sgd_param_grid = {
+    "clf__loss": ["hinge", "modified_huber", "log_loss"],
+    "clf__alpha": [1e-5, 1e-4, 1e-3, 1e-2],
+    "clf__penalty": ["l2", "l1", "elasticnet"],
+    "clf__l1_ratio": [0.15, 0.5],
+    "clf__learning_rate": ["optimal", "adaptive"],
+}
+
+sgd_grid_search = GridSearchCV(
+    sgd_tune_pipeline, sgd_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+)
+sgd_grid_search = cached_grid_search(
+    "cache/sgd_grid_search.pkl", sgd_grid_search, X_train, y_train
+)
+print(f"Best SGD F1:     {sgd_grid_search.best_score_:.4f}")
+print(f"Best SGD Params: {sgd_grid_search.best_params_}")
+
+# ── 6f. Tuning results summary ───────────────────────────────────────────────
+
+tuning_results = pd.DataFrame(
+    [
+        {
+            "model": "logistic_regression",
+            "best_f1": lr_grid_search.best_score_,
+            "best_params": lr_grid_search.best_params_,
+        },
+        {
+            "model": "linear_svc",
+            "best_f1": lsvc_grid_search.best_score_,
+            "best_params": lsvc_grid_search.best_params_,
+        },
+        {
+            "model": "random_forest",
+            "best_f1": rf_grid_search.best_score_,
+            "best_params": rf_grid_search.best_params_,
+        },
+        {
+            "model": "xgboost",
+            "best_f1": xgb_grid_search.best_score_,
+            "best_params": xgb_grid_search.best_params_,
+        },
+        {
+            "model": "sgd",
+            "best_f1": sgd_grid_search.best_score_,
+            "best_params": sgd_grid_search.best_params_,
+        },
+    ]
+)
+baseline_f1 = classifier_results.set_index("pipeline")["f1_mean"]
+tuning_results["before_f1"] = tuning_results["model"].map(baseline_f1)
+tuning_results["delta"] = tuning_results["best_f1"] - tuning_results["before_f1"]
+tuning_results = tuning_results[
+    ["model", "before_f1", "best_f1", "delta", "best_params"]
+].sort_values("best_f1", ascending=False)
+print(tuning_results.to_string(index=False))
+
+#  model                before_f1  best_f1    delta                                                                                                                                best_params
+# logistic_regression     0.7935 0.793532 0.000032                                                                               {'clf__C': 1, 'clf__max_iter': 1000, 'clf__solver': 'lbfgs'}
+#                 sgd     0.7765 0.791890 0.015390 {'clf__alpha': 0.01, 'clf__l1_ratio': 0.15, 'clf__learning_rate': 'adaptive', 'clf__loss': 'modified_huber', 'clf__penalty': 'elasticnet'}
+#          linear_svc     0.7850 0.790932 0.005932                                                                      {'clf__C': 0.01, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2000}
+#             xgboost     0.7815 0.790383 0.008883            {'clf__colsample_bytree': 0.8, 'clf__learning_rate': 0.1, 'clf__max_depth': 7, 'clf__n_estimators': 200, 'clf__subsample': 1.0}
+#       random_forest     0.7847 0.788651 0.003951                                {'clf__max_depth': None, 'clf__max_features': 'sqrt', 'clf__min_samples_leaf': 2, 'clf__n_estimators': 300}
+
+best_lr = lr_grid_search.best_estimator_.named_steps["clf"]
+best_lsvc = lsvc_grid_search.best_estimator_.named_steps["clf"]
+best_rf = rf_grid_search.best_estimator_.named_steps["clf"]
+best_xgb = xgb_grid_search.best_estimator_.named_steps["clf"]
+best_sgd = sgd_grid_search.best_estimator_.named_steps["clf"]
+
 
 # =============================================================================
 # 7. ENSEMBLE METHODS
 # =============================================================================
-
-# XGBoost pipeline on Hybrid_v2_style features
-pipelines["Hybrid_XGB"] = Pipeline(
-    [
-        ("branches", word_char_style_branch),
-        ("scaler", MaxAbsScaler()),
-        (
-            "clf",
-            XGBClassifier(
-                n_estimators=200,
-                learning_rate=0.1,
-                max_depth=5,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                eval_metric="logloss",
-                random_state=42,
-            ),
-        ),
-    ]
-)
-xgb_eval = quick_eval("Hybrid_XGB", pipelines["Hybrid_XGB"], X_train, y_train)
-print(xgb_eval)
-# f1 = 0.7807, acc = 0.7833
-
-xgb_param_grid = {
-    "clf__n_estimators": [100, 200],
-    "clf__learning_rate": [0.05, 0.1],
-    "clf__max_depth": [3, 5],
-}
-
-xgb_grid_search = GridSearchCV(
-    pipelines["Hybrid_XGB"],
-    xgb_param_grid,
-    cv=5,
-    scoring="f1_macro",
-    n_jobs=-1,
-    verbose=1,
-)
-xgb_grid_search.fit(X_train, y_train)
-print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
-print(f"Best XGB Params: {xgb_grid_search.best_params_}")
-# Result: F1 = 0.7920, lr=0.1, max_depth=5, n_estimators=200
-
-# Extract best classifiers from grid searches above
-best_lr = grid_search.best_estimator_.named_steps["clf"]
-best_xgb = xgb_grid_search.best_estimator_.named_steps["clf"]
 
 # Soft-voting ensemble: trust LR 2x more than XGB (it outperforms individually)
 pipelines["Ensemble_LR_XGB"] = Pipeline(
@@ -732,67 +919,3 @@ pipelines["Ensemble_LR_XGB"] = Pipeline(
 ens_eval = quick_eval("Ensemble_LR_XGB", pipelines["Ensemble_LR_XGB"], X_train, y_train)
 print(ens_eval)
 # Result: F1 = 0.8004, acc = 0.8021
-
-# *** note: this takes forever to run!
-# =============================================================================
-# 8. HYPERPARAMETER TUNING 2 - GRID SEARCHES ON RF, XGB COMBINATIONS
-# =============================================================================
-
-# Commented out because it underperforms XGB
-# # Random Forest ------------------------------------------
-# rf_param_grid = {
-#     'clf__n_estimators': [100, 200],           # n trees
-#     'clf__max_depth': [10, 20, None],
-#     'clf__min_samples_leaf': [2, 5, 10],
-#     'clf__max_features': ['sqrt', 'log2'],     # how many features to sample each split
-#     'clf__bootstrap': [True]
-# }
-
-# rf_grid_search = GridSearchCV(
-#     pipelines["Hybrid_RF"],
-#     rf_param_grid,
-#     cv = 5,
-#     scoring = 'f1_macro',
-#     n_jobs = -1,
-#     verbose = 1
-# )
-
-# # run grid, print best results
-# print("Random forest grid search --")
-# rf_grid_search.fit(X_train, y_train)
-# print(f"Best RF Score: {rf_grid_search.best_score_:.4f}")
-# print(f"Best RF Params: {rf_grid_search.best_params_}")
-
-# # RF RESULT: best F1: 0.7771
-# # best params:  bootstrap: True / max_depth: none /
-# #               max_features: sqrt / min_samples = 2 / n_est = 200
-
-
-# XGBoost ----------------------------------------------------------
-# smaller grid to try to cut down on time this takes to run
-# xgb_param_grid = {
-#     'clf__n_estimators': [100, 200],
-#     'clf__learning_rate': [0.05, 0.1],
-#     'clf__max_depth': [3, 5]
-# }
-
-# xgb_grid_search = GridSearchCV(
-#     pipelines["Hybrid_XGB"],
-#     xgb_param_grid,
-#     cv=5,
-#     scoring='f1_macro',
-#     n_jobs=-1,
-#     verbose=1
-# )
-
-# run grid, print best results
-# print("XGBoost grid search --")
-# xgb_grid_search.fit(X_train, y_train)
-
-# print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
-# print(f"Best XGB Params: {xgb_grid_search.best_params_}")
-# XGB RESULT: best F1: 0.7920
-# best: {'clf__learning_rate': 0.1,
-#        'clf__max_depth': 5,
-#        'clf__n_estimators': 200}
-# ** ADJUSTED ACCORDINGLY IN PT 8 PIPELINE BUILD
