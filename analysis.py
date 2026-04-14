@@ -31,12 +31,15 @@ import matplotlib.pyplot as plt
 # =============================================================================
 # 1. BASELINE MODEL
 # =============================================================================
+# SUMMARY: Scrapes headlines from URLs (cached to CSV after first run), splits 80/20,
+# and trains a Logistic Regression on TF-IDF (100 features, English stopwords).
+# FINDINGS: Baseline accuracy ~66.49% — sets the floor to beat in later sections.
 
 # Data collection
 base_url_df = pd.read_csv("data/url_only_data.csv")
 
 if os.path.exists("data/base_scraped_headlines.csv"):
-    news_df = pd.read_csv("data/base_scraped_headlines.csv")
+    news_df_base = pd.read_csv("data/base_scraped_headlines.csv")
 else:
     headlines = []
     for i, url in enumerate(base_url_df["url"]):
@@ -55,45 +58,50 @@ else:
         headlines.append(
             {"headline": title.get_text() if title else None, "source": source}
         )
-    news_df = pd.DataFrame(headlines)
-    news_df.to_csv("data/base_scraped_headlines.csv", index=False)
+    news_df_base = pd.DataFrame(headlines)
+    news_df_base.to_csv("data/base_scraped_headlines.csv", index=False)
 
 
 # Data splitting
 
 # (80% train, 20% test)
-news_df = news_df.dropna(subset=["headline", "source"])
+news_df_base = news_df_base.dropna(subset=["headline", "source"])
 
-X_train, X_test, y_train, y_test = train_test_split(
-    news_df["headline"], news_df["source"], test_size=0.2, random_state=42
+X_train_base, X_test_base, y_train_base, y_test_base = train_test_split(
+    news_df_base["headline"], news_df_base["source"], test_size=0.2, random_state=42
 )
 
 
 # Basic cleaning/pre-processing
-y_train = y_train.apply(lambda x: 1 if x == "FoxNews" else 0)
-y_test = y_test.apply(lambda x: 1 if x == "FoxNews" else 0)
+y_train_base = y_train_base.apply(lambda x: 1 if x == "FoxNews" else 0)
+y_test_base = y_test_base.apply(lambda x: 1 if x == "FoxNews" else 0)
 
 vectorizer = TfidfVectorizer(stop_words="english", max_features=100)
-X_train_tfidf = vectorizer.fit_transform(X_train)
-X_test_tfidf = vectorizer.transform(X_test)
+X_train_tfidf = vectorizer.fit_transform(X_train_base)
+X_test_tfidf = vectorizer.transform(X_test_base)
 
 
 # Train base model
 model = LogisticRegression(max_iter=100)
-model.fit(X_train_tfidf, y_train)
+model.fit(X_train_tfidf, y_train_base)
 
 y_pred = model.predict(X_test_tfidf)
 
 
 # Evaluate base model
-accuracy = accuracy_score(y_test, y_pred)
+accuracy = accuracy_score(y_test_base, y_pred)
 print(f"Accuracy: {accuracy:.4f}")
-print("Classification Report:\n", classification_report(y_test, y_pred))
+print("Classification Report:\n", classification_report(y_test_base, y_pred))
 
 
 # =============================================================================
-# 2. CLEANING FUNCTIONS
+# 2. EDA & CLEANING
 # =============================================================================
+# SUMMARY: Analyzes punctuation/formatting patterns across Fox vs. NBC headlines,
+# then builds a cleaning pipeline (encoding normalization, punctuation standardization,
+# special tokens for money and end-periods, lowercasing).
+# FINDINGS: Key style differences — Fox uses "US" and colons; NBC uses "U.S.", periods,
+# em dashes. These inform both the style_branch features and cleaning decisions.
 
 
 # Checking for possible identifiers between sources
@@ -131,7 +139,9 @@ patterns = {
 }
 
 # table
-pattern_summary(news_df, text_col="headline", group_col="source", patterns=patterns)
+pattern_summary(
+    news_df_base, text_col="headline", group_col="source", patterns=patterns
+)
 
 """Noted:
 
@@ -211,19 +221,25 @@ def clean_hed(text):
 
 
 # =============================================================================
-# 3. DATA PREP & FEATURE-ENGINEERING BUILDING BLOCKS
+# 3. FEATURE ENGINEERING
 # =============================================================================
+# SUMMARY: Builds three feature branches merged via FeatureUnion (horizontal concat):
+#   word_branch:  TF-IDF on words/bigrams (cleaned text) — captures vocabulary differences
+#   char_branch:  TF-IDF on 3–5 char n-grams (cleaned text) — captures morphological/stylistic patterns
+#   style_branch: handcrafted numeric features (raw text) — captures formatting conventions (caps, punctuation, "U.S." vs "US")
+#   combined_branches = word + char (5000 features)
+#   word_char_style_branch = word + char + style (5006 features)
 
 # Recreate news_df to avoid potential issues caused in initial EDA
-news_df2 = pd.read_csv("data/base_scraped_headlines.csv")
-news_df2 = news_df2.dropna(subset=["headline", "source"]).drop_duplicates()
+news_df = pd.read_csv("data/base_scraped_headlines.csv")
+news_df = news_df.dropna(subset=["headline", "source"]).drop_duplicates()
 
-news_df2["label"] = news_df2["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
+news_df["label"] = news_df["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
 
 # Splitting
-X_train2, X_test2, y_train2, y_test2 = train_test_split(
-    news_df2["headline"],
-    news_df2["label"],
+X_train, X_test, y_train, y_test = train_test_split(
+    news_df["headline"],
+    news_df["label"],
     test_size=0.2,
     random_state=42,
 )
@@ -296,6 +312,99 @@ word_char_style_branch = FeatureUnion(
 # =============================================================================
 # 4. PIPELINE DEVELOPMENT & EVALUATION
 # =============================================================================
+# SUMMARY: Loops through cleaning/feature engineering pipeline variants, evaluating
+# each with a fixed baseline classifier (Logistic Regression) via cross-validation.
+# Goal: isolate the best feature representation before varying the classifier.
+# Section 4b then runs a grid search on the winning pipeline to tune its hyperparameters.
+# FINDINGS: Hybrid_v2_style (word + char TF-IDF + style features) performed best
+# at 0.7901 F1 / 0.7920 accuracy, selected as BEST_PIPELINE for Section 5.
+# Grid search confirmed optimal params: max_features=5000, words (1,2), chars (4,6) --> F1 = 0.7935.
+
+# --- Helper Functions --------------------------------------------------------
+
+
+# Helper function to log results as we iterate on new pipelines/models
+# Using F1 score as primary metric, accuracy on the side
+def quick_eval(name, pipeline, X, y, cv=5):
+    f1 = cross_val_score(pipeline, X, y, cv=cv, scoring="f1_macro")
+    acc = cross_val_score(pipeline, X, y, cv=cv, scoring="accuracy")
+    return pd.DataFrame(
+        [
+            {
+                "pipeline": name,
+                "f1_mean": round(f1.mean(), 4),
+                "f1_std": round(f1.std(), 4),
+                "acc_mean": round(acc.mean(), 4),
+                "acc_std": round(acc.std(), 4),
+            }
+        ]
+    )
+
+
+def eval_results(pipeline_dictionary, X, y, cv=5):
+    results = [
+        quick_eval(name, pipe, X, y, cv) for name, pipe in pipeline_dictionary.items()
+    ]
+    return pd.concat(results, ignore_index=True).sort_values("f1_mean", ascending=False)
+
+
+def plot_f1_acc_comparison(results):
+    df = pd.DataFrame(results).sort_values("f1_mean", ascending=False)
+    x = np.arange(len(df))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(
+        x - width / 2,
+        df["f1_mean"],
+        width,
+        yerr=df["f1_std"],
+        label="Macro F1",
+        capsize=4,
+    )
+    ax.bar(
+        x + width / 2,
+        df["acc_mean"],
+        width,
+        yerr=df["acc_std"],
+        label="Accuracy",
+        capsize=4,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["pipeline"], rotation=45, ha="right")
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Score")
+    ax.set_title("Pipeline Comparison")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_roc_curves(pipelines_dict, X_train, y_train, X_test, y_test):
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    for name, pipe in pipelines_dict.items():
+        fitted = clone(pipe).fit(X_train, y_train)
+
+        if hasattr(fitted, "predict_proba"):
+            scores = fitted.predict_proba(X_test)[:, 1]
+        else:
+            scores = fitted.decision_function(X_test)
+
+        fpr, tpr, _ = roc_curve(y_test, scores)
+        roc_auc = auc(fpr, tpr)
+        ax.plot(fpr, tpr, label=f"{name} (AUC = {roc_auc:.3f})")
+
+    ax.plot([0, 1], [0, 1], "k--")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curves")
+    ax.legend(loc="lower right")
+    plt.tight_layout()
+    plt.show()
+
+
+# --- Pipeline Definitions ----------------------------------------------------
 
 # Different permutations of pipelines to iterate thru
 pipelines = {
@@ -420,127 +529,73 @@ pipelines = {
     ),
 }
 
-
-# Helper function to log results as we iterate on new pipelines/models
-# Using F1 score as primary metric, accuracy on the side
-def quick_eval(name, pipeline, X, y, cv=5):
-    f1 = cross_val_score(pipeline, X, y, cv=cv, scoring="f1_macro")
-    acc = cross_val_score(pipeline, X, y, cv=cv, scoring="accuracy")
-    return pd.DataFrame(
-        [
-            {
-                "pipeline": name,
-                "f1_mean": round(f1.mean(), 4),
-                "f1_std": round(f1.std(), 4),
-                "acc_mean": round(acc.mean(), 4),
-                "acc_std": round(acc.std(), 4),
-            }
-        ]
-    )
-
-
-def eval_results(pipeline_dictionary, X, y, cv=5):
-    results = []
-    for name, pipe in pipeline_dictionary.items():
-        f1 = cross_val_score(pipe, X, y, cv=cv, scoring="f1_macro")
-        acc = cross_val_score(pipe, X, y, cv=cv, scoring="accuracy")
-        results.append(
-            {
-                "pipeline": name,
-                "f1_mean": round(f1.mean(), 4),
-                "f1_std": round(f1.std(), 4),
-                "acc_mean": round(acc.mean(), 4),
-                "acc_std": round(acc.std(), 4),
-            }
-        )
-    return pd.DataFrame(results).sort_values("f1_mean", ascending=False)
-
-
-def plot_model_comparison(results, title="Model Comparison"):
-    df = pd.DataFrame(results).sort_values("f1_mean", ascending=False)
-    x = np.arange(len(df))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(
-        x - width / 2,
-        df["f1_mean"],
-        width,
-        yerr=df["f1_std"],
-        label="Macro F1",
-        capsize=4,
-    )
-    ax.bar(
-        x + width / 2,
-        df["acc_mean"],
-        width,
-        yerr=df["acc_std"],
-        label="Accuracy",
-        capsize=4,
-    )
-    ax.set_xticks(x)
-    ax.set_xticklabels(df["pipeline"], rotation=45, ha="right")
-    ax.set_ylim(0, 1)
-    ax.set_ylabel("Score")
-    ax.set_title(title)
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_roc_curves(models_dict, X_train, y_train, X_test, y_test, tfidf=None):
-    if tfidf is None:
-        tfidf = TfidfVectorizer(
-            stop_words="english",
-            max_features=5000,
-            ngram_range=(1, 2),
-            sublinear_tf=True,
-            min_df=2,
-        )
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-
-    for name, clf in models_dict.items():
-        pipe = Pipeline([("tfidf", clone(tfidf)), ("clf", clone(clf))])
-        pipe.fit(X_train, y_train)
-
-        if hasattr(pipe, "predict_proba"):
-            scores = pipe.predict_proba(X_test)[:, 1]
-        else:
-            scores = pipe.decision_function(X_test)
-
-        fpr, tpr, _ = roc_curve(y_test, scores)
-        roc_auc = auc(fpr, tpr)
-        ax.plot(fpr, tpr, label=f"{name} (AUC = {roc_auc:.3f})")
-
-    ax.plot([0, 1], [0, 1], "k--")
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curves")
-    ax.legend(loc="lower right")
-    plt.tight_layout()
-    plt.show()
-
-
 # Compare pipelines
-results_df = eval_results(pipelines, X_train2, y_train2)
+results_df = eval_results(pipelines, X_train, y_train)
 print(results_df.to_string(index=False))
 
+#                pipeline  f1_mean  f1_std  acc_mean  acc_std
+#         Hybrid_v2_style   0.7901  0.0203    0.7920   0.0200
+#               Hybrid_v1   0.7884  0.0200    0.7905   0.0198
+# Optimized_v2_tokenized   0.7837  0.0259    0.7875   0.0255
+#                  Hybrid   0.7806  0.0238    0.7826   0.0242
+#            Optimized_v2   0.7782  0.0222    0.7822   0.0222
+#           V3_char_grams   0.7632  0.0212    0.7657   0.0210
+#                 Cleaned   0.6894  0.0250    0.6917   0.0220
+#                Baseline   0.6804  0.0194    0.6891   0.0171
+
 # Visualize comparisons
-plot_model_comparison(results_df, title="Pipeline Comparison")
+plot_f1_acc_comparison(results_df)
+
+# --- 4b. Hyperparameter Tuning on Best Pipeline --------------------------------
+
+# Grid search on Hybrid_v2_style
+hybrid_v2_param_grid = {
+    # how many words to keep
+    "branches__text__words__max_features": [1000, 2500, 5000],
+    # number of words to group
+    "branches__text__words__ngram_range": [(1, 1), (1, 2)],
+    # character fragment lengths
+    "branches__text__chars__ngram_range": [(3, 5), (4, 6)],
+}
+
+hybrid_v2_grid_search = GridSearchCV(
+    pipelines["Hybrid_v2_style"],
+    hybrid_v2_param_grid,
+    cv=5,
+    scoring="f1_macro",
+    n_jobs=-1,
+)
+hybrid_v2_grid_search.fit(X_train, y_train)
+print(f"Hybrid_v2_style - Best F1: {hybrid_v2_grid_search.best_score_:.4f}")
+print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}")
+# Result: F1 = 0.7935 | max_features=5000, words (1,2), chars (4,6)
 
 
 # =============================================================================
-# 5. MULTI-CLASSIFIER COMPARISON
+# 5. CLASSIFIER SWEEP ON BEST PIPELINE
 # =============================================================================
+#
+# SECTION SUMMARY:
+#   Swap out the classifier on the best-performing feature pipeline (Hybrid_v2_style
+#   with tuned params from 4b) across a range of models to find the best classifier.
+#
+# FINDINGS:
+#   #________
 
-# Updated based on results from last section
+# Rebuild Hybrid_v2_style with optimal params from 4b grid search
 BEST_PIPELINE = "Hybrid_v2_style"
+pipelines[BEST_PIPELINE] = clone(pipelines[BEST_PIPELINE]).set_params(
+    **hybrid_v2_grid_search.best_params_
+)
+print(
+    "Active params on best pipeline:",
+    {k: pipelines[BEST_PIPELINE].get_params()[k] for k in hybrid_v2_param_grid},
+)
 
 # List of models to start out with
 models = {
-    "logistic_regression": LogisticRegression(max_iter=1000),
-    "linear_svc": LinearSVC(max_iter=1000),
+    "logistic_regression": LogisticRegression(),
+    "linear_svc": LinearSVC(),
     "sgd": SGDClassifier(),
     "knn": KNeighborsClassifier(),
     "decision_tree": DecisionTreeClassifier(),
@@ -548,7 +603,7 @@ models = {
     "adaboost": AdaBoostClassifier(),
     "multinomial_nb": MultinomialNB(),
     "complement_nb": ComplementNB(),
-    "xgboost": XGBClassifier(eval_metric="logloss"),
+    "xgboost": XGBClassifier(),
 }
 
 # Iterate thru models, train and predict
@@ -558,14 +613,14 @@ classifier_pipelines = {
 }
 
 # Compare results
-results_df2 = eval_results(classifier_pipelines, X_train2, y_train2)
+results_df2 = eval_results(classifier_pipelines, X_train, y_train)
 print(results_df2.to_string(index=False))
 
 # Visualize comparisons
 # Will take longer for roc curves because we need to fit/predict across
 # classification thresholds for each model
-plot_model_comparison(results_df2, title="Classifier Comparison")
-plot_roc_curves(models, X_train2, y_train2, X_test2, y_test2)
+plot_f1_acc_comparison(results_df2)
+plot_roc_curves(classifier_pipelines, X_train, y_train, X_test, y_test)
 
 
 # =============================================================================
@@ -578,7 +633,7 @@ tables = []
 
 for name in top_models:
     p = pipelines[name]  # pull this particular pipeline
-    p.fit(X_train2, y_train2)  # fit to data
+    p.fit(X_train, y_train)  # fit to data
 
     if "branches" in p.named_steps:
         transformer = p.named_steps["branches"]
@@ -608,34 +663,7 @@ print(horiz.to_string())
 
 
 # =============================================================================
-# 7. HYPERPARAMETER TUNING
-# =============================================================================
-
-# Grid search on Hybrid_v2_style
-# Results are already baked into the pipeline params above -- this section
-# documents how those params were found
-param_grid = {
-    # test different regularization levels (small c -> stricter)
-    "clf__C": [0.1, 1, 10, 100],
-    # how many words to keep
-    "branches__text__words__max_features": [1000, 2500, 5000],
-    # number of words to group
-    "branches__text__words__ngram_range": [(1, 1), (1, 2)],
-    # character fragment lengths
-    "branches__text__chars__ngram_range": [(3, 5), (4, 6)],
-}
-
-grid_search = GridSearchCV(
-    pipelines["Hybrid_v2_style"], param_grid, cv=5, scoring="f1_macro", n_jobs=-1
-)
-grid_search.fit(X_train2, y_train2)
-print(f"Best F1: {grid_search.best_score_:.4f}")
-print(f"Best Parameters: {grid_search.best_params_}")
-# Result: F1 = 0.7937, C=1, max_features=5000, words (1,2), chars (4,6)
-
-
-# =============================================================================
-# 8. ENSEMBLE METHODS
+# 7. ENSEMBLE METHODS
 # =============================================================================
 
 # XGBoost pipeline on Hybrid_v2_style features
@@ -657,7 +685,7 @@ pipelines["Hybrid_XGB"] = Pipeline(
         ),
     ]
 )
-xgb_eval = quick_eval("Hybrid_XGB", pipelines["Hybrid_XGB"], X_train2, y_train2)
+xgb_eval = quick_eval("Hybrid_XGB", pipelines["Hybrid_XGB"], X_train, y_train)
 print(xgb_eval)
 # f1 = 0.7807, acc = 0.7833
 
@@ -675,7 +703,7 @@ xgb_grid_search = GridSearchCV(
     n_jobs=-1,
     verbose=1,
 )
-xgb_grid_search.fit(X_train2, y_train2)
+xgb_grid_search.fit(X_train, y_train)
 print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
 print(f"Best XGB Params: {xgb_grid_search.best_params_}")
 # Result: F1 = 0.7920, lr=0.1, max_depth=5, n_estimators=200
@@ -701,15 +729,13 @@ pipelines["Ensemble_LR_XGB"] = Pipeline(
     ]
 )
 
-ens_eval = quick_eval(
-    "Ensemble_LR_XGB", pipelines["Ensemble_LR_XGB"], X_train2, y_train2
-)
+ens_eval = quick_eval("Ensemble_LR_XGB", pipelines["Ensemble_LR_XGB"], X_train, y_train)
 print(ens_eval)
 # Result: F1 = 0.8004, acc = 0.8021
 
 # *** note: this takes forever to run!
 # =============================================================================
-# 9. HYPERPARAMETER TUNING 2 - GRID SEARCHES ON RF, XGB COMBINATIONS
+# 8. HYPERPARAMETER TUNING 2 - GRID SEARCHES ON RF, XGB COMBINATIONS
 # =============================================================================
 
 # Commented out because it underperforms XGB
@@ -733,7 +759,7 @@ print(ens_eval)
 
 # # run grid, print best results
 # print("Random forest grid search --")
-# rf_grid_search.fit(X_train2, y_train2)
+# rf_grid_search.fit(X_train, y_train)
 # print(f"Best RF Score: {rf_grid_search.best_score_:.4f}")
 # print(f"Best RF Params: {rf_grid_search.best_params_}")
 
@@ -761,7 +787,7 @@ print(ens_eval)
 
 # run grid, print best results
 # print("XGBoost grid search --")
-# xgb_grid_search.fit(X_train2, y_train2)
+# xgb_grid_search.fit(X_train, y_train)
 
 # print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
 # print(f"Best XGB Params: {xgb_grid_search.best_params_}")
