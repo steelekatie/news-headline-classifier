@@ -9,18 +9,22 @@ import requests
 from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    AdaBoostClassifier,
+    VotingClassifier,
+)
 from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score, classification_report, roc_curve, auc
 from sklearn.pipeline import Pipeline, FeatureUnion
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, MaxAbsScaler
 from xgboost import XGBClassifier
 import matplotlib.pyplot as plt
 
@@ -212,7 +216,7 @@ def clean_hed(text):
 
 # Recreate news_df to avoid potential issues caused in initial EDA
 news_df2 = pd.read_csv("data/base_scraped_headlines.csv")
-news_df2 = news_df2.dropna(subset=["headline", "source"])
+news_df2 = news_df2.dropna(subset=["headline", "source"]).drop_duplicates()
 
 news_df2["label"] = news_df2["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
 
@@ -247,6 +251,44 @@ combined_branches = FeatureUnion(
     [
         ("words", word_branch),
         ("chars", char_branch),
+    ]
+)
+
+
+# style feature extractor -- operates on raw (uncleaned) text
+# cleaning would strip the capitalization and punctuation these features depend on
+def extract_style(series):
+    s = series.astype(str)
+    features = pd.DataFrame(
+        {
+            "len": s.str.len(),
+            "n_caps": s.str.count(r"[A-Z]"),
+            "has_colons": s.str.contains(":").astype(int),
+            "has_period": s.str.contains(r"\.").astype(int),
+            "has_U_S": s.str.contains(r"U\.S").astype(int),
+            "has_US": s.str.contains(r"\bUS\b").astype(int),
+        }
+    )
+    return features.values
+
+
+style_branch = FunctionTransformer(
+    extract_style,
+    feature_names_out=lambda self, input_features: [
+        "len",
+        "n_caps",
+        "colon",
+        "period",
+        "U.S.",
+        "US",
+    ],
+)
+
+# merge text and style branches -- used in Hybrid_v2_style
+word_char_style_branch = FeatureUnion(
+    [
+        ("text", combined_branches),
+        ("style", style_branch),
     ]
 )
 
@@ -335,11 +377,68 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100)),
         ]
     ),
+    # Hybrid with tuned hyperparameters (larger vocab, wider char n-grams)
+    "Hybrid_v1": Pipeline(
+        [
+            ("cleaning", clean_transform),
+            (
+                "branches",
+                FeatureUnion(
+                    [
+                        (
+                            "words",
+                            TfidfVectorizer(
+                                analyzer="word",
+                                token_pattern=r"\[?[\w]{2,}\]?",
+                                ngram_range=(1, 2),
+                                max_features=5000,
+                                stop_words="english",
+                            ),
+                        ),
+                        (
+                            "chars",
+                            TfidfVectorizer(
+                                analyzer="char_wb",
+                                ngram_range=(4, 6),
+                                max_features=5000,
+                            ),
+                        ),
+                    ]
+                ),
+            ),
+            ("clf", LogisticRegression(max_iter=100, random_state=42)),
+        ]
+    ),
+    # Hybrid with word, char, AND style features -- no clean_transform
+    # (style branch needs raw caps and punctuation)
+    "Hybrid_v2_style": Pipeline(
+        [
+            ("branches", word_char_style_branch),
+            ("scaler", MaxAbsScaler()),
+            ("clf", LogisticRegression(max_iter=100, random_state=42, C=1)),
+        ]
+    ),
 }
 
 
 # Helper function to log results as we iterate on new pipelines/models
 # Using F1 score as primary metric, accuracy on the side
+def quick_eval(name, pipeline, X, y, cv=5):
+    f1 = cross_val_score(pipeline, X, y, cv=cv, scoring="f1_macro")
+    acc = cross_val_score(pipeline, X, y, cv=cv, scoring="accuracy")
+    return pd.DataFrame(
+        [
+            {
+                "pipeline": name,
+                "f1_mean": round(f1.mean(), 4),
+                "f1_std": round(f1.std(), 4),
+                "acc_mean": round(acc.mean(), 4),
+                "acc_std": round(acc.std(), 4),
+            }
+        ]
+    )
+
+
 def eval_results(pipeline_dictionary, X, y, cv=5):
     results = []
     for name, pipe in pipeline_dictionary.items():
@@ -436,12 +535,7 @@ plot_model_comparison(results_df, title="Pipeline Comparison")
 # =============================================================================
 
 # Updated based on results from last section
-BEST_PIPELINE = "Hybrid"
-
-# Pull the cleaning and feature extraction steps directly from the best pipeline,
-# so each of the 10 models below runs through the exact same preprocessing.
-best_cleaning = pipelines[BEST_PIPELINE].named_steps["cleaning"]
-best_features = pipelines[BEST_PIPELINE].named_steps["branches"]
+BEST_PIPELINE = "Hybrid_v2_style"
 
 # List of models to start out with
 models = {
@@ -459,9 +553,7 @@ models = {
 
 # Iterate thru models, train and predict
 classifier_pipelines = {
-    name: Pipeline(
-        [("cleaning", best_cleaning), ("branches", best_features), ("clf", clf)]
-    )
+    name: clone(pipelines[BEST_PIPELINE]).set_params(clf=clf)
     for name, clf in models.items()
 }
 
@@ -481,19 +573,18 @@ plot_roc_curves(models, X_train2, y_train2, X_test2, y_test2)
 # =============================================================================
 
 # Extract most predictive features from different pipelines
-top_models = ["Hybrid", "V3_char_grams", "Optimized_v2_tokenized"]
+top_models = ["Hybrid_v1", "Hybrid_v2_style", "Optimized_v2_tokenized", "V3_char_grams"]
 tables = []
 
 for name in top_models:
     p = pipelines[name]  # pull this particular pipeline
     p.fit(X_train2, y_train2)  # fit to data
 
-    if "branches" in p.named_steps:  # if branches exist (hybrid), diff command
-        feats = p.named_steps["branches"].get_feature_names_out()
+    if "branches" in p.named_steps:
+        transformer = p.named_steps["branches"]
     else:
-        feats = p.named_steps[
-            "tfidf"
-        ].get_feature_names_out()  # otherwise should be same for all
+        transformer = p.named_steps["tfidf"]
+    feats = transformer.get_feature_names_out()
 
     coefs = p.named_steps["clf"].coef_[0]  # pull coefs for features
 
@@ -514,3 +605,168 @@ for name in top_models:
 
 horiz = pd.concat(tables, axis=1)  # side-by-side
 print(horiz.to_string())
+
+
+# =============================================================================
+# 7. HYPERPARAMETER TUNING
+# =============================================================================
+
+# Grid search on Hybrid_v2_style
+# Results are already baked into the pipeline params above -- this section
+# documents how those params were found
+param_grid = {
+    # test different regularization levels (small c -> stricter)
+    "clf__C": [0.1, 1, 10, 100],
+    # how many words to keep
+    "branches__text__words__max_features": [1000, 2500, 5000],
+    # number of words to group
+    "branches__text__words__ngram_range": [(1, 1), (1, 2)],
+    # character fragment lengths
+    "branches__text__chars__ngram_range": [(3, 5), (4, 6)],
+}
+
+grid_search = GridSearchCV(
+    pipelines["Hybrid_v2_style"], param_grid, cv=5, scoring="f1_macro", n_jobs=-1
+)
+grid_search.fit(X_train2, y_train2)
+print(f"Best F1: {grid_search.best_score_:.4f}")
+print(f"Best Parameters: {grid_search.best_params_}")
+# Result: F1 = 0.7937, C=1, max_features=5000, words (1,2), chars (4,6)
+
+
+# =============================================================================
+# 8. ENSEMBLE METHODS
+# =============================================================================
+
+# XGBoost pipeline on Hybrid_v2_style features
+pipelines["Hybrid_XGB"] = Pipeline(
+    [
+        ("branches", word_char_style_branch),
+        ("scaler", MaxAbsScaler()),
+        (
+            "clf",
+            XGBClassifier(
+                n_estimators=200,
+                learning_rate=0.1,
+                max_depth=5,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                eval_metric="logloss",
+                random_state=42,
+            ),
+        ),
+    ]
+)
+xgb_eval = quick_eval("Hybrid_XGB", pipelines["Hybrid_XGB"], X_train2, y_train2)
+print(xgb_eval)
+# f1 = 0.7807, acc = 0.7833
+
+xgb_param_grid = {
+    "clf__n_estimators": [100, 200],
+    "clf__learning_rate": [0.05, 0.1],
+    "clf__max_depth": [3, 5],
+}
+
+xgb_grid_search = GridSearchCV(
+    pipelines["Hybrid_XGB"],
+    xgb_param_grid,
+    cv=5,
+    scoring="f1_macro",
+    n_jobs=-1,
+    verbose=1,
+)
+xgb_grid_search.fit(X_train2, y_train2)
+print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
+print(f"Best XGB Params: {xgb_grid_search.best_params_}")
+# Result: F1 = 0.7920, lr=0.1, max_depth=5, n_estimators=200
+
+# Extract best classifiers from grid searches above
+best_lr = grid_search.best_estimator_.named_steps["clf"]
+best_xgb = xgb_grid_search.best_estimator_.named_steps["clf"]
+
+# Soft-voting ensemble: trust LR 2x more than XGB (it outperforms individually)
+pipelines["Ensemble_LR_XGB"] = Pipeline(
+    [
+        ("branches", word_char_style_branch),
+        ("scaler", MaxAbsScaler()),
+        (
+            "clf",
+            VotingClassifier(
+                estimators=[("lr", best_lr), ("xgb", best_xgb)],
+                voting="soft",
+                weights=[2, 1],
+                n_jobs=-1,
+            ),
+        ),
+    ]
+)
+
+ens_eval = quick_eval(
+    "Ensemble_LR_XGB", pipelines["Ensemble_LR_XGB"], X_train2, y_train2
+)
+print(ens_eval)
+# Result: F1 = 0.8004, acc = 0.8021
+
+# *** note: this takes forever to run!
+# =============================================================================
+# 9. HYPERPARAMETER TUNING 2 - GRID SEARCHES ON RF, XGB COMBINATIONS
+# =============================================================================
+
+# Commented out because it underperforms XGB
+# # Random Forest ------------------------------------------
+# rf_param_grid = {
+#     'clf__n_estimators': [100, 200],           # n trees
+#     'clf__max_depth': [10, 20, None],
+#     'clf__min_samples_leaf': [2, 5, 10],
+#     'clf__max_features': ['sqrt', 'log2'],     # how many features to sample each split
+#     'clf__bootstrap': [True]
+# }
+
+# rf_grid_search = GridSearchCV(
+#     pipelines["Hybrid_RF"],
+#     rf_param_grid,
+#     cv = 5,
+#     scoring = 'f1_macro',
+#     n_jobs = -1,
+#     verbose = 1
+# )
+
+# # run grid, print best results
+# print("Random forest grid search --")
+# rf_grid_search.fit(X_train2, y_train2)
+# print(f"Best RF Score: {rf_grid_search.best_score_:.4f}")
+# print(f"Best RF Params: {rf_grid_search.best_params_}")
+
+# # RF RESULT: best F1: 0.7771
+# # best params:  bootstrap: True / max_depth: none /
+# #               max_features: sqrt / min_samples = 2 / n_est = 200
+
+
+# XGBoost ----------------------------------------------------------
+# smaller grid to try to cut down on time this takes to run
+# xgb_param_grid = {
+#     'clf__n_estimators': [100, 200],
+#     'clf__learning_rate': [0.05, 0.1],
+#     'clf__max_depth': [3, 5]
+# }
+
+# xgb_grid_search = GridSearchCV(
+#     pipelines["Hybrid_XGB"],
+#     xgb_param_grid,
+#     cv=5,
+#     scoring='f1_macro',
+#     n_jobs=-1,
+#     verbose=1
+# )
+
+# run grid, print best results
+# print("XGBoost grid search --")
+# xgb_grid_search.fit(X_train2, y_train2)
+
+# print(f"Best XGB Score: {xgb_grid_search.best_score_:.4f}")
+# print(f"Best XGB Params: {xgb_grid_search.best_params_}")
+# XGB RESULT: best F1: 0.7920
+# best: {'clf__learning_rate': 0.1,
+#        'clf__max_depth': 5,
+#        'clf__n_estimators': 200}
+# ** ADJUSTED ACCORDINGLY IN PT 8 PIPELINE BUILD
