@@ -4,3 +4,4 @@ katie_adds/
 pipeline_planning.md
 __pycache__/
 model.joblib
+model.pt
