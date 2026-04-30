@@ -2,3 +2,6 @@
 katie_adds/
 *.pkl
 pipeline_planning.md
+__pycache__/
+model.joblib
+model.pt
