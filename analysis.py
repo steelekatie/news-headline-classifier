@@ -968,7 +968,27 @@ pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
     )
 )
 
-# ── 7d. Evaluate and cache all ensembles ─────────────────────────────────────
+# ── 7d. Stacking — submission ensemble (no XGBoost — not in backend env) ───────
+
+pipelines["Ensemble_Stack_NoXGB"] = clone(pipelines[BEST_PIPELINE]).set_params(
+    clf=StackingClassifier(
+        estimators=[
+            ("lr", best_lr),
+            ("lsvc", best_lsvc),
+            ("sgd", best_sgd),
+            ("rf", best_rf),
+        ],
+        final_estimator=LogisticRegression(
+            C=1, max_iter=1000, random_state=RANDOM_STATE
+        ),
+        cv=5,
+        stack_method="auto",
+        n_jobs=-1,
+        passthrough=False,
+    )
+)
+
+# ── 7e. Evaluate and cache all ensembles ─────────────────────────────────────
 
 ensemble_results = cached_eval(
     "cache/ensemble_results.csv",
@@ -977,12 +997,13 @@ ensemble_results = cached_eval(
     y_train,
 )
 print(ensemble_results.to_string(index=False))
-#        pipeline  f1_mean  f1_std  acc_mean  acc_std
-#  Ensemble_Stack   0.8032  0.0238    0.8048   0.0240
-# Ensemble_Soft_4   0.8028  0.0237    0.8044   0.0240
-# Ensemble_Soft_5   0.8002  0.0246    0.8017   0.0247
+#             pipeline  f1_mean  f1_std  acc_mean  acc_std
+#       Ensemble_Stack   0.8032  0.0238    0.8048   0.0240
+#      Ensemble_Soft_4   0.8028  0.0237    0.8044   0.0240
+#      Ensemble_Soft_5   0.8002  0.0246    0.8017   0.0247
+# Ensemble_Stack_NoXGB   0.7975  0.0246    0.7991   0.0247
 
-# ── 7e. Visual comparison: tuned models vs. ensembles ────────────────────────
+# ── 7f. Visual comparison: tuned models vs. ensembles ────────────────────────
 
 tuned_pipelines = {
     "logistic_regression": lr_grid_search.best_estimator_,
@@ -1002,3 +1023,23 @@ comparison_pipelines = {
     **{k: v for k, v in pipelines.items() if k.startswith("Ensemble_")},
 }
 plot_roc_curves(comparison_pipelines, X_train, y_train, X_test, y_test)
+
+
+# =============================================================================
+# 8. FINAL EVALUATION ON HELD-OUT TEST SET
+# =============================================================================
+
+FINAL_PIPELINE = "Ensemble_Stack_NoXGB"
+
+final_pipeline = clone(pipelines[FINAL_PIPELINE])
+final_pipeline.fit(X_train, y_train)
+
+y_pred_final = final_pipeline.predict(X_test)
+
+final_accuracy = accuracy_score(y_test, y_pred_final)
+print(f"Final pipeline: {FINAL_PIPELINE}")
+print(f"Test accuracy: {final_accuracy:.4f}")
+print(
+    "Classification Report:\n",
+    classification_report(y_test, y_pred_final, target_names=["NBC", "FoxNews"]),
+)

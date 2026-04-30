@@ -18,13 +18,11 @@ import torch
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
 
 from preprocess import style_branch
-
 
 RANDOM_STATE = 42
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model.pt")
@@ -144,8 +142,6 @@ def get_model():
 
 
 if __name__ == "__main__":
-    from sklearn.metrics import accuracy_score, classification_report
-
     DATA_PATH = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "data",
@@ -157,22 +153,8 @@ if __name__ == "__main__":
     news_df = news_df.dropna(subset=["headline", "source"]).drop_duplicates()
     news_df["label"] = news_df["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
 
-    # 80/20 split with fixed seed -- consistent with analysis.py for reproducibility
-    X_train, X_test, y_train, y_test = train_test_split(
-        news_df["headline"],
-        news_df["label"],
-        test_size=0.2,
-        random_state=RANDOM_STATE,
-    )
-
-    # build and fit the chosen final pipeline
     pipeline = _build_pipeline()
-    pipeline.fit(X_train, y_train)
-
-    # sanity-check accuracy on the held-out 20%
-    y_pred = pipeline.predict(X_test)
-    print(f"Test accuracy: {accuracy_score(y_test, y_pred):.4f}")
-    print(classification_report(y_test, y_pred))
+    pipeline.fit(news_df["headline"], news_df["label"])
 
     # serialize the fitted pipeline for Model.__init__ to load at grading time.
     # joblib-pickle into a buffer, then wrap in torch.save so the artifact is a
