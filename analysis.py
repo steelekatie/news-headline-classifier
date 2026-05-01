@@ -27,7 +27,8 @@ from sklearn.base import clone
 from sklearn.metrics import accuracy_score, classification_report, roc_curve, auc
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.preprocessing import FunctionTransformer, MaxAbsScaler
-from xgboost import XGBClassifier
+
+# from xgboost import XGBClassifier  # leaderboard env lacks xgboost
 import joblib
 import matplotlib.pyplot as plt
 
@@ -41,8 +42,8 @@ import matplotlib.pyplot as plt
 # Data collection
 base_url_df = pd.read_csv("data/url_only_data.csv")
 
-if os.path.exists("data/base_scraped_headlines.csv"):
-    news_df_base = pd.read_csv("data/base_scraped_headlines.csv")
+if os.path.exists("data/expanded_headlines.csv"):
+    news_df_base = pd.read_csv("data/expanded_headlines.csv")
 else:
     headlines = []
     for i, url in enumerate(base_url_df["url"]):
@@ -239,7 +240,7 @@ def clean_hed(text):
 #   word_char_style_branch = word + char + style (5006 features)
 
 # Recreate news_df to avoid potential issues caused in initial EDA
-news_df = pd.read_csv("data/base_scraped_headlines.csv")
+news_df = pd.read_csv("data/expanded_headlines.csv")
 news_df = news_df.dropna(subset=["headline", "source"]).drop_duplicates()
 
 news_df["label"] = news_df["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
@@ -559,7 +560,7 @@ pipelines = {
 
 # Compare pipelines
 pipeline_results = cached_eval(
-    "cache/pipeline_results.csv", pipelines, X_train, y_train
+    "cache/expanded_data/pipeline_results.csv", pipelines, X_train, y_train
 )
 print(pipeline_results.to_string(index=False))
 
@@ -644,7 +645,10 @@ hybrid_v2_grid_search = GridSearchCV(
     n_jobs=-1,
 )
 hybrid_v2_grid_search = cached_grid_search(
-    "cache/hybrid_v2_grid_search.pkl", hybrid_v2_grid_search, X_train, y_train
+    "cache/expanded_data/hybrid_v2_grid_search.pkl",
+    hybrid_v2_grid_search,
+    X_train,
+    y_train,
 )
 print(f"Hybrid_v2_style - Best F1: {hybrid_v2_grid_search.best_score_:.4f}")
 print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}")
@@ -684,7 +688,7 @@ models = {
     "adaboost": AdaBoostClassifier(random_state=RANDOM_STATE),
     "multinomial_nb": MultinomialNB(),
     "complement_nb": ComplementNB(),
-    "xgboost": XGBClassifier(random_state=RANDOM_STATE),
+    # "xgboost": XGBClassifier(random_state=RANDOM_STATE),
 }
 
 # Iterate thru models, train and predict
@@ -695,7 +699,7 @@ classifier_pipelines = {
 
 # Compare results
 classifier_results = cached_eval(
-    "cache/classifier_results.csv", classifier_pipelines, X_train, y_train
+    "cache/expanded_data/classifier_results.csv", classifier_pipelines, X_train, y_train
 )
 print(classifier_results.to_string(index=False))
 
@@ -750,7 +754,7 @@ lr_grid_search = GridSearchCV(
     lr_tune_pipeline, lr_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
 )
 lr_grid_search = cached_grid_search(
-    "cache/lr_grid_search.pkl", lr_grid_search, X_train, y_train
+    "cache/expanded_data/lr_grid_search.pkl", lr_grid_search, X_train, y_train
 )
 print(f"Best LR F1:     {lr_grid_search.best_score_:.4f}")
 print(f"Best LR Params: {lr_grid_search.best_params_}")
@@ -771,7 +775,7 @@ lsvc_grid_search = GridSearchCV(
     lsvc_tune_pipeline, lsvc_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
 )
 lsvc_grid_search = cached_grid_search(
-    "cache/lsvc_grid_search.pkl", lsvc_grid_search, X_train, y_train
+    "cache/expanded_data/lsvc_grid_search.pkl", lsvc_grid_search, X_train, y_train
 )
 print(f"Best LinearSVC F1:     {lsvc_grid_search.best_score_:.4f}")
 print(f"Best LinearSVC Params: {lsvc_grid_search.best_params_}")
@@ -793,33 +797,34 @@ rf_grid_search = GridSearchCV(
     rf_tune_pipeline, rf_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
 )
 rf_grid_search = cached_grid_search(
-    "cache/rf_grid_search.pkl", rf_grid_search, X_train, y_train
+    "cache/expanded_data/rf_grid_search.pkl", rf_grid_search, X_train, y_train
 )
 print(f"Best RF F1:     {rf_grid_search.best_score_:.4f}")
 print(f"Best RF Params: {rf_grid_search.best_params_}")
 
 # ── 6d. XGBoost ──────────────────────────────────────────────────────────────
-
-xgb_tune_pipeline = clone(base_pipeline).set_params(
-    clf=XGBClassifier(eval_metric="logloss", random_state=RANDOM_STATE)
-)
-
-xgb_param_grid = {
-    "clf__n_estimators": [100, 200, 300],
-    "clf__learning_rate": [0.05, 0.1, 0.2],
-    "clf__max_depth": [3, 5, 7],
-    "clf__subsample": [0.8, 1.0],
-    "clf__colsample_bytree": [0.8, 1.0],
-}
-
-xgb_grid_search = GridSearchCV(
-    xgb_tune_pipeline, xgb_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
-)
-xgb_grid_search = cached_grid_search(
-    "cache/xgb_grid_search.pkl", xgb_grid_search, X_train, y_train
-)
-print(f"Best XGB F1:     {xgb_grid_search.best_score_:.4f}")
-print(f"Best XGB Params: {xgb_grid_search.best_params_}")
+# Skipped: leaderboard env doesn't ship xgboost, so the model can't be submitted.
+#
+# xgb_tune_pipeline = clone(base_pipeline).set_params(
+#     clf=XGBClassifier(eval_metric="logloss", random_state=RANDOM_STATE)
+# )
+#
+# xgb_param_grid = {
+#     "clf__n_estimators": [100, 200, 300],
+#     "clf__learning_rate": [0.05, 0.1, 0.2],
+#     "clf__max_depth": [3, 5, 7],
+#     "clf__subsample": [0.8, 1.0],
+#     "clf__colsample_bytree": [0.8, 1.0],
+# }
+#
+# xgb_grid_search = GridSearchCV(
+#     xgb_tune_pipeline, xgb_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
+# )
+# xgb_grid_search = cached_grid_search(
+#     "cache/expanded_data/xgb_grid_search.pkl", xgb_grid_search, X_train, y_train
+# )
+# print(f"Best XGB F1:     {xgb_grid_search.best_score_:.4f}")
+# print(f"Best XGB Params: {xgb_grid_search.best_params_}")
 
 # ── 6e. SGD ──────────────────────────────────────────────────────────────────
 
@@ -839,7 +844,7 @@ sgd_grid_search = GridSearchCV(
     sgd_tune_pipeline, sgd_param_grid, cv=5, scoring="f1_macro", n_jobs=-1, verbose=2
 )
 sgd_grid_search = cached_grid_search(
-    "cache/sgd_grid_search.pkl", sgd_grid_search, X_train, y_train
+    "cache/expanded_data/sgd_grid_search.pkl", sgd_grid_search, X_train, y_train
 )
 print(f"Best SGD F1:     {sgd_grid_search.best_score_:.4f}")
 print(f"Best SGD Params: {sgd_grid_search.best_params_}")
@@ -863,11 +868,11 @@ tuning_results = pd.DataFrame(
             "best_f1": rf_grid_search.best_score_,
             "best_params": rf_grid_search.best_params_,
         },
-        {
-            "model": "xgboost",
-            "best_f1": xgb_grid_search.best_score_,
-            "best_params": xgb_grid_search.best_params_,
-        },
+        # {
+        #     "model": "xgboost",
+        #     "best_f1": xgb_grid_search.best_score_,
+        #     "best_params": xgb_grid_search.best_params_,
+        # },
         {
             "model": "sgd",
             "best_f1": sgd_grid_search.best_score_,
@@ -893,7 +898,7 @@ print(tuning_results.to_string(index=False))
 best_lr = lr_grid_search.best_estimator_.named_steps["clf"]
 best_lsvc = lsvc_grid_search.best_estimator_.named_steps["clf"]
 best_rf = rf_grid_search.best_estimator_.named_steps["clf"]
-best_xgb = xgb_grid_search.best_estimator_.named_steps["clf"]
+# best_xgb = xgb_grid_search.best_estimator_.named_steps["clf"]
 best_sgd = sgd_grid_search.best_estimator_.named_steps["clf"]
 
 
@@ -913,15 +918,15 @@ best_sgd = sgd_grid_search.best_estimator_.named_steps["clf"]
 #   negligible. Adding calibrated LinearSVC (Soft_5) slightly hurts vs. the
 #   4-model soft vote — calibration noise outweighs its contribution.
 
-# ── 7a. Soft voting — 4 proba models (LR + SGD + XGB + RF) ──────────────────
+# ── 7a. Soft voting — 3 proba models (LR + SGD + RF; XGB removed) ───────────
 # LinearSVC excluded here since it lacks predict_proba
 
-pipelines["Ensemble_Soft_4"] = clone(pipelines[BEST_PIPELINE]).set_params(
+pipelines["Ensemble_Soft_3"] = clone(pipelines[BEST_PIPELINE]).set_params(
     clf=VotingClassifier(
         estimators=[
             ("lr", best_lr),
             ("sgd", best_sgd),
-            ("xgb", best_xgb),
+            # ("xgb", best_xgb),  # leaderboard env lacks xgboost
             ("rf", best_rf),
         ],
         voting="soft",
@@ -929,15 +934,15 @@ pipelines["Ensemble_Soft_4"] = clone(pipelines[BEST_PIPELINE]).set_params(
     )
 )
 
-# ── 7b. Soft voting — all 5 (CalibratedClassifierCV wraps LinearSVC) ─────────
+# ── 7b. Soft voting — all 4 (CalibratedClassifierCV wraps LinearSVC; XGB removed) ─
 
 cal_lsvc = CalibratedClassifierCV(best_lsvc, cv=5)
-pipelines["Ensemble_Soft_5"] = clone(pipelines[BEST_PIPELINE]).set_params(
+pipelines["Ensemble_Soft_4"] = clone(pipelines[BEST_PIPELINE]).set_params(
     clf=VotingClassifier(
         estimators=[
             ("lr", best_lr),
             ("sgd", best_sgd),
-            ("xgb", best_xgb),
+            # ("xgb", best_xgb),  # leaderboard env lacks xgboost
             ("rf", best_rf),
             ("lsvc", cal_lsvc),
         ],
@@ -946,8 +951,8 @@ pipelines["Ensemble_Soft_5"] = clone(pipelines[BEST_PIPELINE]).set_params(
     )
 )
 
-# ── 7c. Stacking — all 5 base models --> LR meta-learner ───────────────────────
-# stack_method="auto": predict_proba for LR/SGD/RF/XGB, decision_function for LinearSVC
+# ── 7c. Stacking — 4 base models --> LR meta-learner (XGB removed) ───────────
+# stack_method="auto": predict_proba for LR/SGD/RF, decision_function for LinearSVC
 
 pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
     clf=StackingClassifier(
@@ -955,7 +960,7 @@ pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
             ("lr", best_lr),
             ("lsvc", best_lsvc),
             ("sgd", best_sgd),
-            ("xgb", best_xgb),
+            # ("xgb", best_xgb),  # leaderboard env lacks xgboost
             ("rf", best_rf),
         ],
         final_estimator=LogisticRegression(
@@ -969,29 +974,30 @@ pipelines["Ensemble_Stack"] = clone(pipelines[BEST_PIPELINE]).set_params(
 )
 
 # ── 7d. Stacking — submission ensemble (no XGBoost — not in backend env) ───────
-
-pipelines["Ensemble_Stack_NoXGB"] = clone(pipelines[BEST_PIPELINE]).set_params(
-    clf=StackingClassifier(
-        estimators=[
-            ("lr", best_lr),
-            ("lsvc", best_lsvc),
-            ("sgd", best_sgd),
-            ("rf", best_rf),
-        ],
-        final_estimator=LogisticRegression(
-            C=1, max_iter=1000, random_state=RANDOM_STATE
-        ),
-        cv=5,
-        stack_method="auto",
-        n_jobs=-1,
-        passthrough=False,
-    )
-)
+# Now identical to Ensemble_Stack since XGB has been removed everywhere; commented out.
+#
+# pipelines["Ensemble_Stack_NoXGB"] = clone(pipelines[BEST_PIPELINE]).set_params(
+#     clf=StackingClassifier(
+#         estimators=[
+#             ("lr", best_lr),
+#             ("lsvc", best_lsvc),
+#             ("sgd", best_sgd),
+#             ("rf", best_rf),
+#         ],
+#         final_estimator=LogisticRegression(
+#             C=1, max_iter=1000, random_state=RANDOM_STATE
+#         ),
+#         cv=5,
+#         stack_method="auto",
+#         n_jobs=-1,
+#         passthrough=False,
+#     )
+# )
 
 # ── 7e. Evaluate and cache all ensembles ─────────────────────────────────────
 
 ensemble_results = cached_eval(
-    "cache/ensemble_results.csv",
+    "cache/expanded_data/ensemble_results.csv",
     {k: v for k, v in pipelines.items() if k.startswith("Ensemble_")},
     X_train,
     y_train,
@@ -1009,11 +1015,13 @@ tuned_pipelines = {
     "logistic_regression": lr_grid_search.best_estimator_,
     "linear_svc": lsvc_grid_search.best_estimator_,
     "sgd": sgd_grid_search.best_estimator_,
-    "xgboost": xgb_grid_search.best_estimator_,
+    # "xgboost": xgb_grid_search.best_estimator_,
     "random_forest": rf_grid_search.best_estimator_,
 }
 
-tuned_eval = cached_eval("cache/tuned_eval.csv", tuned_pipelines, X_train, y_train)
+tuned_eval = cached_eval(
+    "cache/expanded_data/tuned_eval.csv", tuned_pipelines, X_train, y_train
+)
 
 comparison_results = pd.concat([tuned_eval, ensemble_results], ignore_index=True)
 plot_f1_acc_comparison(comparison_results)
@@ -1029,7 +1037,7 @@ plot_roc_curves(comparison_pipelines, X_train, y_train, X_test, y_test)
 # 8. FINAL EVALUATION ON HELD-OUT TEST SET
 # =============================================================================
 
-FINAL_PIPELINE = "Ensemble_Stack_NoXGB"
+FINAL_PIPELINE = "Ensemble_Stack"
 
 final_pipeline = clone(pipelines[FINAL_PIPELINE])
 final_pipeline.fit(X_train, y_train)
