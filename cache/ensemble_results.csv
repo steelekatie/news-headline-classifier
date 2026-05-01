@@ -1,5 +1,0 @@
-pipeline,f1_mean,f1_std,acc_mean,acc_std
-Ensemble_Stack,0.8032,0.0238,0.8048,0.024
-Ensemble_Soft_4,0.8028,0.0237,0.8044,0.024
-Ensemble_Soft_5,0.8002,0.0246,0.8017,0.0247
-Ensemble_Stack_NoXGB,0.7975,0.0246,0.7991,0.0247
