@@ -37,7 +37,6 @@ import matplotlib.pyplot as plt
 # =============================================================================
 # SUMMARY: Scrapes headlines from URLs (cached to CSV after first run), splits 80/20,
 # and trains a Logistic Regression on TF-IDF (100 features, English stopwords).
-# FINDINGS: Baseline accuracy ~66.49% — sets the floor to beat in later sections.
 
 # Data collection
 base_url_df = pd.read_csv("data/url_only_data.csv")
@@ -327,9 +326,6 @@ word_char_style_branch = FeatureUnion(
 # each with a fixed baseline classifier (Logistic Regression) via cross-validation.
 # Goal: isolate the best feature representation before varying the classifier.
 # Section 4b then runs a grid search on the winning pipeline to tune its hyperparameters.
-# FINDINGS: Hybrid_v2_style (word + char TF-IDF + style features) performed best
-# at 0.7901 F1 / 0.7920 accuracy, selected as BEST_PIPELINE for Section 5.
-# Grid search confirmed optimal params: max_features=5000, words (1,2), chars (4,6) --> F1 = 0.7935.
 
 # --- Helper Functions --------------------------------------------------------
 
@@ -563,16 +559,15 @@ pipeline_results = cached_eval(
     "cache/expanded_data/pipeline_results.csv", pipelines, X_train, y_train
 )
 print(pipeline_results.to_string(index=False))
-
-#                pipeline  f1_mean  f1_std  acc_mean  acc_std
-#         Hybrid_v2_style   0.7901  0.0203    0.7920   0.0200
-#               Hybrid_v1   0.7884  0.0200    0.7905   0.0198
-# Optimized_v2_tokenized   0.7837  0.0259    0.7875   0.0255
-#                  Hybrid   0.7806  0.0238    0.7826   0.0242
-#            Optimized_v2   0.7782  0.0222    0.7822   0.0222
-#           V3_char_grams   0.7632  0.0212    0.7657   0.0210
-#                 Cleaned   0.6894  0.0250    0.6917   0.0220
-#                Baseline   0.6804  0.0194    0.6891   0.0171
+#               pipeline  f1_mean  f1_std  acc_mean  acc_std
+#        Hybrid_v2_style   0.8052  0.0064    0.8052   0.0064
+#                 Hybrid   0.7983  0.0025    0.7983   0.0026
+#              Hybrid_v1   0.7931  0.0018    0.7931   0.0018
+#          V3_char_grams   0.7764  0.0051    0.7764   0.0051
+# Optimized_v2_tokenized   0.7672  0.0037    0.7673   0.0036
+#           Optimized_v2   0.7650  0.0045    0.7652   0.0045
+#                Cleaned   0.6387  0.0056    0.6467   0.0048
+#               Baseline   0.6380  0.0067    0.6464   0.0055
 
 # Visualize comparisons
 plot_f1_acc_comparison(pipeline_results)
@@ -612,18 +607,17 @@ for name in top_pipelines:
 
 horiz = pd.concat(tables, axis=1)  # side-by-side
 print(horiz.to_string())
-
-# Hybrid_v2_style_Feature  Hybrid_v2_style_Weight Hybrid_v1_Feature  Hybrid_v1_Weight Optimized_v2_tokenized_Feature  Optimized_v2_tokenized_Weight Hybrid_Feature  Hybrid_Weight
-# 0              style__len                3.350485        words__jan         -2.025015                            jan                      -3.424734      words__us       2.389302
-# 1           style__period               -1.752561        chars__ a          -1.683278                           best                      -2.976003     words__jan      -1.869728
-# 2               style__US                1.708950        words__cnn          1.502579                    [endperiod]                      -2.694165     chars__ a       -1.825240
-# 3            style__colon                1.675516       chars__ us           1.454715                           gaza                      -2.432246     words__cnn       1.658027
-# 4        text__chars__ a                -1.649641      chars__ and          -1.375990                          biden                       2.381995     chars__s'        1.593260
-# 5       text__chars__ dem                1.440520       chars__ and         -1.370195                         israel                      -2.093440     words__and      -1.511618
-# 6    text__words__and the                1.305231       chars__the          -1.332073                            cnn                       2.051903     chars__e'        1.405264
-# 7        text__words__dem                1.218429      chars__ the          -1.291582                       election                      -1.940925     chars__n.       -1.394808
-# 8        text__words__cnn                1.201619       words__gaza         -1.268110                       american                       1.714240     chars__ u.      -1.341437
-# 9           style__n_caps                1.171434       chars__ the         -1.240809                      netanyahu                      -1.661681     chars__s:        1.322135
+#  Hybrid_v2_style_Feature  Hybrid_v2_style_Weight Hybrid_v1_Feature  Hybrid_v1_Weight Optimized_v2_tokenized_Feature  Optimized_v2_tokenized_Weight Hybrid_Feature  Hybrid_Weight
+# 0              style__len                8.072314       chars__ us          10.849496                           page                       7.336800      words__us       6.171184
+# 1           style__n_caps                6.314248        words__fox          4.291501                    [endperiod]                      -6.242857     chars__ a       -4.384548
+# 2         text__words__dc                3.721698         words__dc          4.282381                            fox                       6.075642    words__page       4.379179
+# 3   text__words__dateline               -3.525635        chars__ a          -3.976460                            dem                       5.066266      words__dc       4.371533
+# 4        text__chars__ -                 3.002103       chars__ u.s         -3.915901                             la                       4.634403     chars__n.       -4.065691
+# 5        text__chars__ |                 2.932598        words__dem          3.868698                       fox news                       4.383548     words__dem       4.045900
+# 6   text__words__iran war               -2.916701       words__page          3.791145                             dc                       4.305521     words__fox       4.030966
+# 7    text__words__rundown               -2.864868       chars__u.s.         -3.775597                           dies                      -4.121655     chars__ u.      -3.835230
+# 8         text__words__uk                2.792536      chars__ u.s.         -3.713847                             en                       4.044690     chars__s:        3.673565
+# 9               style__US                2.783728       words__herd          3.623850                            jan                      -4.028994     chars__e:        3.643648
 
 # --- 4c. Hyperparameter Tuning on Best Pipeline --------------------------------
 
@@ -652,7 +646,8 @@ hybrid_v2_grid_search = cached_grid_search(
 )
 print(f"Hybrid_v2_style - Best F1: {hybrid_v2_grid_search.best_score_:.4f}")
 print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}")
-# Result: F1 = 0.7935 | max_features=5000, words (1,2), chars (4,6)
+# Hybrid_v2_style - Best F1: 0.8127
+# Hybrid_v2_style - Best Parameters: {'branches__text__chars__ngram_range': (4, 6), 'branches__text__words__max_features': 5000, 'branches__text__words__ngram_range': (1, 2)}
 
 
 # =============================================================================
@@ -663,9 +658,6 @@ print(f"Hybrid_v2_style - Best Parameters: {hybrid_v2_grid_search.best_params_}"
 #   Swap out the classifier on the best-performing feature pipeline (Hybrid_v2_style
 #   with tuned params from 4b) across a range of models to find the best classifier.
 #
-# FINDINGS:
-#   Logistic Regression wins outright at F1=0.7935/acc=0.7954, matching the grid
-#   search ceiling. Linear SVC and XGBoost follow. KNN and Decision Tree lag.
 
 # Rebuild Hybrid_v2_style with optimal params from 4b grid search
 BEST_PIPELINE = "Hybrid_v2_style"
@@ -704,16 +696,15 @@ classifier_results = cached_eval(
 print(classifier_results.to_string(index=False))
 
 #            pipeline  f1_mean  f1_std  acc_mean  acc_std
-# logistic_regression   0.7935  0.0165    0.7954   0.0170
-#          linear_svc   0.7850  0.0092    0.7871   0.0097
-#       random_forest   0.7847  0.0057    0.7871   0.0059
-#             xgboost   0.7815  0.0172    0.7833   0.0176
-#                 sgd   0.7765  0.0198    0.7777   0.0195
-#       complement_nb   0.7703  0.0260    0.7706   0.0262
-#      multinomial_nb   0.7702  0.0228    0.7706   0.0230
-#            adaboost   0.7236  0.0060    0.7262   0.0051
-#       decision_tree   0.6874  0.0290    0.6902   0.0288
-#                 knn   0.6259  0.0497    0.6617   0.0287
+# logistic_regression   0.8127  0.0041    0.8127   0.0041
+#                 sgd   0.8059  0.0050    0.8060   0.0050
+#       random_forest   0.7912  0.0019    0.7915   0.0018
+#          linear_svc   0.7893  0.0048    0.7893   0.0048
+#      multinomial_nb   0.7515  0.0052    0.7516   0.0051
+#       complement_nb   0.7514  0.0054    0.7515   0.0054
+#       decision_tree   0.6960  0.0057    0.6961   0.0057
+#            adaboost   0.6868  0.0107    0.6919   0.0089
+#                 knn   0.5641  0.0097    0.5989   0.0052
 
 # Visualize comparisons
 plot_f1_acc_comparison(classifier_results)
@@ -888,12 +879,11 @@ tuning_results = tuning_results[
 ].sort_values("best_f1", ascending=False)
 print(tuning_results.to_string(index=False))
 
-#  model                before_f1  best_f1    delta                                                                                                                                best_params
-# logistic_regression     0.7935 0.793532 0.000032                                                                               {'clf__C': 1, 'clf__max_iter': 1000, 'clf__solver': 'lbfgs'}
-#                 sgd     0.7765 0.791890 0.015390 {'clf__alpha': 0.01, 'clf__l1_ratio': 0.15, 'clf__learning_rate': 'adaptive', 'clf__loss': 'modified_huber', 'clf__penalty': 'elasticnet'}
-#          linear_svc     0.7850 0.790932 0.005932                                                                      {'clf__C': 0.01, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2000}
-#             xgboost     0.7815 0.790383 0.008883            {'clf__colsample_bytree': 0.8, 'clf__learning_rate': 0.1, 'clf__max_depth': 7, 'clf__n_estimators': 200, 'clf__subsample': 1.0}
-#       random_forest     0.7847 0.788651 0.003951                                {'clf__max_depth': None, 'clf__max_features': 'sqrt', 'clf__min_samples_leaf': 2, 'clf__n_estimators': 300}
+# model                 before_f1  best_f1    delta                                                                                                                                best_params
+#                 sgd     0.8059 0.814979 0.009079 {'clf__alpha': 0.001, 'clf__l1_ratio': 0.15, 'clf__learning_rate': 'optimal', 'clf__loss': 'modified_huber', 'clf__penalty': 'elasticnet'}
+# logistic_regression     0.8127 0.812713 0.000013                                                                                {'clf__C': 1, 'clf__max_iter': 1000, 'clf__solver': 'saga'}
+#          linear_svc     0.7893 0.811567 0.022267                                                                       {'clf__C': 0.1, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2000}
+#       random_forest     0.7912 0.797668 0.006468                                {'clf__max_depth': None, 'clf__max_features': 'sqrt', 'clf__min_samples_leaf': 1, 'clf__n_estimators': 300}
 
 best_lr = lr_grid_search.best_estimator_.named_steps["clf"]
 best_lsvc = lsvc_grid_search.best_estimator_.named_steps["clf"]
@@ -1003,11 +993,10 @@ ensemble_results = cached_eval(
     y_train,
 )
 print(ensemble_results.to_string(index=False))
-#             pipeline  f1_mean  f1_std  acc_mean  acc_std
-#       Ensemble_Stack   0.8032  0.0238    0.8048   0.0240
-#      Ensemble_Soft_4   0.8028  0.0237    0.8044   0.0240
-#      Ensemble_Soft_5   0.8002  0.0246    0.8017   0.0247
-# Ensemble_Stack_NoXGB   0.7975  0.0246    0.7991   0.0247
+#        pipeline  f1_mean  f1_std  acc_mean  acc_std
+#  Ensemble_Stack   0.8222  0.0037    0.8222   0.0037
+# Ensemble_Soft_3   0.8218  0.0050    0.8219   0.0050
+# Ensemble_Soft_4   0.8201  0.0052    0.8201   0.0052
 
 # ── 7f. Visual comparison: tuned models vs. ensembles ────────────────────────
 
@@ -1051,3 +1040,15 @@ print(
     "Classification Report:\n",
     classification_report(y_test, y_pred_final, target_names=["NBC", "FoxNews"]),
 )
+
+# Final pipeline: Ensemble_Stack
+# Test accuracy: 0.8259
+# Classification Report:
+#                precision    recall  f1-score   support
+
+#          NBC       0.81      0.84      0.83      2907
+#      FoxNews       0.84      0.82      0.83      3009
+
+#     accuracy                           0.83      5916
+#    macro avg       0.83      0.83      0.83      5916
+# weighted avg       0.83      0.83      0.83      5916

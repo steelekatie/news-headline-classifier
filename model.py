@@ -62,24 +62,23 @@ def _build_pipeline():
 
     # tuned base learners from Section 6 grid searches in analysis.py
     best_lr = LogisticRegression(
-        C=1, solver="lbfgs", max_iter=1000, random_state=RANDOM_STATE
+        C=1, solver="saga", max_iter=1000, random_state=RANDOM_STATE
     )
     best_lsvc = LinearSVC(
-        C=0.01, loss="squared_hinge", max_iter=2000, random_state=RANDOM_STATE
+        C=0.1, loss="squared_hinge", max_iter=2000, random_state=RANDOM_STATE
     )
     best_sgd = SGDClassifier(
-        alpha=0.01,
+        alpha=0.001,
         l1_ratio=0.15,
-        learning_rate="adaptive",
+        learning_rate="optimal",
         loss="modified_huber",
         penalty="elasticnet",
-        eta0=0.01,
         random_state=RANDOM_STATE,
     )
     best_rf = RandomForestClassifier(
         max_depth=None,
         max_features="sqrt",
-        min_samples_leaf=2,
+        min_samples_leaf=1,
         n_estimators=300,
         random_state=RANDOM_STATE,
     )
@@ -145,7 +144,7 @@ if __name__ == "__main__":
     DATA_PATH = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "data",
-        "base_scraped_headlines.csv",
+        "expanded_headlines.csv",
     )
 
     # load cached scrape, drop NA/dupes, build binary labels (matches analysis.py)
