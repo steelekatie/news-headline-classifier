@@ -22,7 +22,7 @@ from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import MaxAbsScaler
 from sklearn.svm import LinearSVC
 
-from preprocess import style_branch
+from preprocess import style_branch, prepare_data
 
 RANDOM_STATE = 42
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model.pt")
@@ -62,15 +62,14 @@ def _build_pipeline():
 
     # tuned base learners from Section 6 grid searches in analysis.py
     best_lr = LogisticRegression(
-        C=1, solver="saga", max_iter=1000, random_state=RANDOM_STATE
+        C=1, solver="lbfgs", max_iter=1000, random_state=RANDOM_STATE
     )
-    best_lsvc = LinearSVC(
-        C=0.1, loss="squared_hinge", max_iter=2000, random_state=RANDOM_STATE
-    )
+    best_lsvc = LinearSVC(C=0.1, loss="hinge", max_iter=2000, random_state=RANDOM_STATE)
     best_sgd = SGDClassifier(
         alpha=0.001,
         l1_ratio=0.15,
-        learning_rate="optimal",
+        learning_rate="adaptive",
+        eta0=0.01,
         loss="modified_huber",
         penalty="elasticnet",
         random_state=RANDOM_STATE,
@@ -122,6 +121,11 @@ class Model:
         # step in eval flow succeeds, and we extract the real pipeline here.
         state = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
         self.pipeline = joblib.load(io.BytesIO(state["pipeline_bytes"]))
+        # sklearn version mismatch: newer sklearn checks self.clip in MaxAbsScaler.transform
+        # but pickles from older sklearn don't have the attribute -- add the default
+        for _, step in self.pipeline.steps:
+            if isinstance(step, MaxAbsScaler) and not hasattr(step, "clip"):
+                step.clip = False
 
     def eval(self):
         return None
@@ -147,13 +151,12 @@ if __name__ == "__main__":
         "expanded_headlines.csv",
     )
 
-    # load cached scrape, drop NA/dupes, build binary labels (matches analysis.py)
-    news_df = pd.read_csv(DATA_PATH)
-    news_df = news_df.dropna(subset=["headline", "source"]).drop_duplicates()
-    news_df["label"] = news_df["source"].apply(lambda x: 1 if x == "FoxNews" else 0)
+    # use prepare_data() so training matches the grader's filtered distribution
+    # (Spanish/length/page-artifact filters + dedupe + URL-or-source label inference)
+    X, y = prepare_data(DATA_PATH, verbose=True)
 
     pipeline = _build_pipeline()
-    pipeline.fit(news_df["headline"], news_df["label"])
+    pipeline.fit(X, y)
 
     # serialize the fitted pipeline for Model.__init__ to load at grading time.
     # joblib-pickle into a buffer, then wrap in torch.save so the artifact is a

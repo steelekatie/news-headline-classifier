@@ -1,0 +1,5 @@
+pipeline,f1_mean,f1_std,acc_mean,acc_std
+sgd,0.7971,0.0049,0.7994,0.0047
+logistic_regression,0.7939,0.0045,0.7959,0.0045
+linear_svc,0.7929,0.0031,0.7956,0.0029
+random_forest,0.7737,0.0079,0.7773,0.0076

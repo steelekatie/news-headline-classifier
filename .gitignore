@@ -1,7 +1,6 @@
 .DS_Store
-katie_adds/
 *.pkl
-pipeline_planning.md
+misc/
 __pycache__/
 model.joblib
 model.pt

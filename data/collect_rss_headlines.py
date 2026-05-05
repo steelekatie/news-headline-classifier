@@ -51,7 +51,7 @@ TOPICS = [
 START = date(2025, 11, 1)
 END = date(2026, 4, 30)
 
-REPO_ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+REPO_ROOT = Path(__file__).resolve().parent.parent if "__file__" in globals() else Path.cwd()
 BASE_CSV = REPO_ROOT / "data" / "url_with_headlines.csv"
 NEW_CSV = REPO_ROOT / "data" / "new_scraped_headlines.csv"
 EXPANDED_CSV = REPO_ROOT / "data" / "expanded_headlines.csv"
