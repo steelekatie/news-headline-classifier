@@ -1,3 +1,29 @@
+# =============================================================================
+# collect_rss_headlines.py — dataset expansion via Google News scraping.
+# =============================================================================
+# Purpose:
+#   Build data/expanded_headlines.csv (the training set used by model.py and
+#   analysis.py) by harvesting Fox News and NBC News headlines from
+#   Google News search results.
+#
+# Approach:
+#   - For each (date, topic, source) triple, issue a Google News query using
+#     the `site:foxnews.com` / `site:nbcnews.com` operator scoped to a single
+#     day. Per-day, per-topic queries side-step Google's ~100-result cap and
+#     give us broader topical coverage than a single-shot scrape.
+#   - Iterate over the START..END window day-by-day across the topic list,
+#     parse the result page with BeautifulSoup, strip the "- Fox News" /
+#     "| NBC News" suffixes, and collect (url, headline) rows.
+#   - Append to the existing url_with_headlines.csv to produce
+#     expanded_headlines.csv. Labels are inferred downstream by
+#     preprocess.prepare_data() based on the URL substring.
+#
+# Run cadence:
+#   This is a one-off script, not part of training
+#   Output gets cleaned + filtered later in preprocess.prepare_data() (Spanish
+#   drop, length bounds, page-artifact removal, dedupe).
+# =============================================================================
+
 import re
 import time
 from datetime import date, timedelta
@@ -51,12 +77,16 @@ TOPICS = [
 START = date(2025, 11, 1)
 END = date(2026, 4, 30)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent if "__file__" in globals() else Path.cwd()
+REPO_ROOT = (
+    Path(__file__).resolve().parent.parent if "__file__" in globals() else Path.cwd()
+)
 BASE_CSV = REPO_ROOT / "data" / "url_with_headlines.csv"
 NEW_CSV = REPO_ROOT / "data" / "new_scraped_headlines.csv"
 EXPANDED_CSV = REPO_ROOT / "data" / "expanded_headlines.csv"
 
 
+# Build the list of single-day windows that drive the per-day Google query
+# loop — one (after, before) pair per calendar day in [start, end].
 def day_ranges(start, end):
     # Yield (after, before) pairs covering one calendar day each
     days = []
@@ -67,6 +97,9 @@ def day_ranges(start, end):
     return days
 
 
+# Trim the trailing source attribution that Google News appends to RSS titles
+# (e.g. "Headline text - Fox News") so the saved headline matches what we'd
+# scrape directly from the article page.
 def strip_source_suffix(title):
     for suffix in SUFFIXES:
         if title.endswith(suffix):
@@ -74,6 +107,8 @@ def strip_source_suffix(title):
     return title.strip()
 
 
+# Issue a single Google News RSS query for the given (site, topic, day) slice
+# and return the list of cleaned headline strings.
 def fetch_google_news_headlines(site_query, topic, after, before):
     # Hit Google News RSS for one (site, topic, day) slice; return cleaned titles
     q = f"{site_query} {topic} after:{after} before:{before}"
@@ -100,11 +135,18 @@ def fetch_google_news_headlines(site_query, topic, after, before):
     return headlines
 
 
+# Canonical key for headline deduplication — lowercases and drops every
+# non-alphanumeric char so punctuation/spacing variants collapse to the same
+# string before comparison against the existing base CSV.
 def normalize(text):
     # Lowercase + strip non-alphanumerics so near-duplicates collapse for dedup
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
+# loops over (source, topic, day), aggregates results,
+# dedupes exactly on (headline, source), balances class counts via
+# per-source downsampling, then merges the new rows with BASE_CSV (skipping
+# anything whose normalized headline already exists there) and writes EXPANDED_CSV.
 def main():
     days = day_ranges(START, END)
     total_queries = len(days) * len(TOPICS) * len(SOURCES)
@@ -155,7 +197,9 @@ def main():
     # Exact dedup on (headline, source); write the raw new-only CSV unfiltered by balancing
     new_df = pd.DataFrame(rows)
     print(f"Raw rows scraped: {len(new_df)}")
-    new_df = new_df.drop_duplicates(subset=["headline", "source"]).reset_index(drop=True)
+    new_df = new_df.drop_duplicates(subset=["headline", "source"]).reset_index(
+        drop=True
+    )
     print(f"After exact dedup: {len(new_df)}")
     NEW_CSV.parent.mkdir(parents=True, exist_ok=True)
     new_df.to_csv(NEW_CSV, index=False)
@@ -171,8 +215,10 @@ def main():
     # Filter only the new portion against base; base rows are appended untouched
     base_df = pd.read_csv(BASE_CSV).dropna(subset=["headline"])
     # Infer source from URL substring, matching preprocess.py's labeling convention
-    base_df["source"] = base_df["url"].str.contains("foxnews.com", case=False, na=False).map(
-        {True: "FoxNews", False: "NBC"}
+    base_df["source"] = (
+        base_df["url"]
+        .str.contains("foxnews.com", case=False, na=False)
+        .map({True: "FoxNews", False: "NBC"})
     )
     base_keys = set(base_df["headline"].astype(str).map(normalize))
     balanced_new = balanced_new.assign(
