@@ -1,11 +1,32 @@
-# See reorganize_for_submission.md for the full decision trail behind this file.
+# =============================================================================
+# model.py — submission entry point for Track B (Fox vs NBC headlines).
+# =============================================================================
+# Purpose:
+#   - Define the final feature + classifier pipeline (Hybrid_v2_style features
+#     feeding a stacked LR + LinearSVC + SGD + RF ensemble with an LR meta-learner).
+#   - Expose `Model` and `get_model()` per the course's submission contract:
+#     the grading backend imports this module, calls `get_model()`, and uses
+#     `Model.predict(headlines)` to score a hidden test set.
+#   - Provide a `__main__` block that re-fits the pipeline on
+#     data/expanded_headlines.csv and writes the artifact to model.pt.
+#
+# Artifact format:
+#   model.pt is a torch.save({"pipeline_bytes": <joblib bytes>}) container.
+#   The backend only accepts `.pt` and runs torch.load before handing control
+#   to Model.__init__, which then joblib-loads the real sklearn pipeline.
+#
+# Companion files:
+#   preprocess.py — provides prepare_data() and the style_branch transformer.
+#   analysis/analysis.py — dev notebook where the pipeline + hyperparameters
+#                          were selected (not submitted).
+# =============================================================================
 
+# Libraries
 import os
 import sys
 
 # put this file's directory on sys.path so `from preprocess import ...`
-# resolves regardless of where the grader invokes us from -- also lets
-# joblib unpickle the FunctionTransformer's reference to preprocess.extract_style
+# resolves regardless of where the grader invokes us from
 _MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 if _MODEL_DIR not in sys.path:
     sys.path.insert(0, _MODEL_DIR)
@@ -60,7 +81,7 @@ def _build_pipeline():
         ]
     )
 
-    # tuned base learners from Section 6 grid searches in analysis.py
+    # tuned base learners from Section 5 grid searches in analysis.py
     best_lr = LogisticRegression(
         C=1, solver="lbfgs", max_iter=1000, random_state=RANDOM_STATE
     )
@@ -83,7 +104,7 @@ def _build_pipeline():
     )
 
     # stack the 4 base learners under an LR meta-learner
-    # XGBoost excluded -- not in backend env per submission_instructions.md
+    # XGBoost excluded
     clf = StackingClassifier(
         estimators=[
             ("lr", best_lr),
@@ -151,7 +172,6 @@ if __name__ == "__main__":
         "expanded_headlines.csv",
     )
 
-    # use prepare_data() so training matches the grader's filtered distribution
     # (Spanish/length/page-artifact filters + dedupe + URL-or-source label inference)
     X, y = prepare_data(DATA_PATH, verbose=True)
 

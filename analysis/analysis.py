@@ -5,15 +5,20 @@
 import os
 import sys
 
+# Resolve the repo root whether this file is run as a script from analysis/
+# or executed cell-by-cell in a notebook (where __file__ is undefined).
 _here = (
     os.path.dirname(os.path.abspath(__file__))
     if "__file__" in globals()
     else os.getcwd()
 )
+# If we're inside analysis/, step up one level so imports and relative
+# data paths (e.g. "data/...") resolve against the repo root.
 REPO_ROOT = os.path.dirname(_here) if os.path.basename(_here) == "analysis" else _here
 sys.path.insert(0, REPO_ROOT)
 os.chdir(REPO_ROOT)
 
+# Import shared preprocessing helpers from the repo-root preprocess file
 from preprocess import prepare_data, clean_hed, style_branch, STYLE_FEATURE_NAMES
 
 import requests
@@ -48,9 +53,11 @@ import matplotlib.pyplot as plt
 # =============================================================================
 # SUMMARY: Loads the scraped headlines from data/expanded_headlines.csv (or scrapes
 # from URLs if not yet cached), drops missing rows, and does an 80/20 split. Trains
-# a Logistic Regression on TF-IDF (100 features, English stopwords) — this is the
-# 66.49% baseline we're trying to beat. No filtering or feature engineering applied
-# here; that's all in Section 2 onward.
+# a Logistic Regression on TF-IDF (100 features, English stopwords). No filtering or
+# feature engineering applied here; that's all in Section 2 onward.
+# Result on the expanded dataset: 0.6442 accuracy — class 0 (NBC) recall 0.80 but
+# precision 0.60, class 1 (Fox) precision 0.72 but recall 0.50 (macro F1 0.64).
+# This is the baseline we aim to beat from Section 2 onward.
 
 # Data collection
 base_url_df = pd.read_csv("data/url_only_data.csv")
@@ -204,8 +211,10 @@ word_char_style_branch = FeatureUnion(
 # --- Helper Functions --------------------------------------------------------
 
 
-# Helper function to log results as we iterate on new pipelines/models
-# Using F1 score as primary metric, accuracy on the side
+# Run k-fold CV on a single pipeline and return a one-row DataFrame with
+# macro-F1 and accuracy (mean + std). Macro-F1 is our primary metric since
+# the classes are close to balanced but we still want both classes weighted
+# equally; accuracy is reported alongside for continuity with the baseline.
 def quick_eval(name, pipeline, X, y, cv=5):
     f1 = cross_val_score(pipeline, X, y, cv=cv, scoring="f1_macro")
     acc = cross_val_score(pipeline, X, y, cv=cv, scoring="accuracy")
@@ -222,6 +231,8 @@ def quick_eval(name, pipeline, X, y, cv=5):
     )
 
 
+# Run quick_eval over a {name: pipeline} dict and return a single DataFrame
+# sorted by macro-F1 descending — used to compare candidate pipelines side-by-side.
 def eval_results(pipeline_dictionary, X, y, cv=5):
     results = [
         quick_eval(name, pipe, X, y, cv) for name, pipe in pipeline_dictionary.items()
@@ -229,6 +240,8 @@ def eval_results(pipeline_dictionary, X, y, cv=5):
     return pd.concat(results, ignore_index=True).sort_values("f1_mean", ascending=False)
 
 
+# Disk-cached GridSearchCV: reuse the pickled fitted searcher if it exists,
+# otherwise run the search and persist it.
 def cached_grid_search(cache_path, grid_search, X, y):
     if os.path.exists(cache_path):
         return joblib.load(cache_path)
@@ -238,6 +251,8 @@ def cached_grid_search(cache_path, grid_search, X, y):
     return grid_search
 
 
+# Disk-cached version of eval_results: save the comparison DataFrame to CSV
+# so re-running the notebook reads the prior sweep results instead of re-running CV.
 def cached_eval(cache_path, pipeline_dictionary, X, y, cv=5):
     if os.path.exists(cache_path):
         return pd.read_csv(cache_path)
@@ -247,6 +262,8 @@ def cached_eval(cache_path, pipeline_dictionary, X, y, cv=5):
     return results
 
 
+# Side-by-side bar chart of macro-F1 vs accuracy (with std error bars) across
+# pipelines, sorted by F1 — visual companion to the eval_results DataFrame.
 def plot_f1_acc_comparison(results):
     df = pd.DataFrame(results).sort_values("f1_mean", ascending=False)
     x = np.arange(len(df))
@@ -279,6 +296,9 @@ def plot_f1_acc_comparison(results):
     plt.show()
 
 
+# Fit each pipeline on the training split and overlay ROC curves on the held-out
+# test set, falling back to decision_function for classifiers without predict_proba
+# (e.g. LinearSVC).
 def plot_roc_curves(pipelines_dict, X_train, y_train, X_test, y_test):
     fig, ax = plt.subplots(figsize=(10, 7))
 
@@ -307,12 +327,17 @@ def plot_roc_curves(pipelines_dict, X_train, y_train, X_test, y_test):
 
 # Different permutations of pipelines to iterate thru
 pipelines = {
+    # Baseline: replicates Section 1 (TF-IDF 100 features + LR) on the
+    # filtered dataset so we have an apples-to-apples comparison
     "Baseline": Pipeline(
         [
             ("tfidf", TfidfVectorizer(stop_words="english", max_features=100)),
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
+    # Cleaned: same Baseline capacity but routes text through clean_hed first
+    # and uses a custom token pattern (allows [bracketed], 2+ char tokens),
+    # tests whether normalization alone moves the needle at low capacity
     "Cleaned": Pipeline(
         [
             ("cleaning", clean_transform),
@@ -331,6 +356,8 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
+    # Optimized_v2: scales vocab to 5k, adds bigrams and sublinear TF,
+    # the standard "good defaults" TF-IDF + LR setup, no custom cleaning.
     "Optimized_v2": Pipeline(
         [
             (
@@ -345,6 +372,9 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
+    # Optimized_v2_tokenized: Optimized_v2 + clean_hed + custom token pattern
+    # + min_df=2. Isolates the effect of cleaning + tokenization
+    # on top of the strong word-ngram baseline.
     "Optimized_v2_tokenized": Pipeline(
         [
             ("cleaning", clean_transform),
@@ -362,6 +392,9 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
+    # V3_char_grams: drops words entirely and uses 3–5 char_wb n-grams,
+    # tests whether sub-word morphology (suffixes, casing patterns, "U.S.")
+    # alone is enough signal to outperform pure word features.
     "V3_char_grams": Pipeline(
         [
             ("cleaning", clean_transform),
@@ -378,6 +411,9 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
+    # Hybrid: word + char branches concatenated,
+    # both at 2500 features. First model that combines vocabulary and
+    # sub-word signals, expected to dominate the single-branch variants.
     "Hybrid": Pipeline(
         [
             ("cleaning", clean_transform),
@@ -385,7 +421,9 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
-    # Hybrid with tuned hyperparameters (larger vocab, wider char n-grams)
+    # Hybrid_v1: same shape as Hybrid but with tuned hyperparameters,
+    # 5k features per branch and wider char n-grams (4–6) to capture
+    # longer morphological patterns.
     "Hybrid_v1": Pipeline(
         [
             ("cleaning", clean_transform),
@@ -417,8 +455,11 @@ pipelines = {
             ("clf", LogisticRegression(max_iter=100, random_state=RANDOM_STATE)),
         ]
     ),
-    # Hybrid with word, char, AND style features -- no clean_transform
-    # (style branch needs raw caps and punctuation)
+    # Hybrid_v2_style: word + char + 12 style features
+    # Skips clean_transform because the style branch needs raw caps
+    # and punctuation; MaxAbsScaler keeps style magnitudes from dominating
+    # the sparse TF-IDF columns. This is the top performer and the basis
+    # for the submission pipeline.
     "Hybrid_v2_style": Pipeline(
         [
             ("branches", word_char_style_branch),
@@ -452,17 +493,27 @@ plot_f1_acc_comparison(pipeline_results)
 top_pipelines = ["Hybrid_v2_style", "Hybrid_v1", "Optimized_v2_tokenized", "Hybrid"]
 tables = []
 
+# For each top pipeline, fit on the training set and pull the LR coefficients
+# alongside the corresponding feature names so we can inspect the most
+# predictive tokens/n-grams/style features. The "branches" step (FeatureUnion)
+# vs "tfidf" step (single vectorizer) lookup handles both pipeline shapes.
+# Sign of the coefficient indicates the direction: positive = Fox (class 1),
+# negative = NBC (class 0); we keep the top 10 by absolute weight for each.
 for name in top_pipelines:
-    p = pipelines[name]  # pull this particular pipeline
-    p.fit(X_train, y_train)  # fit to data
+    p = pipelines[name]
+    p.fit(X_train, y_train)
 
+    # Hybrid pipelines expose features under "branches"; single-vectorizer
+    # pipelines expose them under "tfidf".
     if "branches" in p.named_steps:
         transformer = p.named_steps["branches"]
     else:
         transformer = p.named_steps["tfidf"]
     feats = transformer.get_feature_names_out()
 
-    coefs = p.named_steps["clf"].coef_[0]  # pull coefs for features
+    # LR coef_ is shape (1, n_features) for binary classification — index [0]
+    # gives the per-feature weights aligned with `feats`.
+    coefs = p.named_steps["clf"].coef_[0]
 
     feat_df = (
         pd.DataFrame(
@@ -607,6 +658,8 @@ print(
 )
 
 # ── 5a. Logistic Regression ──────────────────────────────────────────────────
+# Tuning: C (regularization strength) and solver (lbfgs vs saga).
+# max_iter fixed at 1000.
 
 lr_tune_pipeline = clone(base_pipeline).set_params(
     clf=LogisticRegression(random_state=RANDOM_STATE)
@@ -628,6 +681,8 @@ print(f"Best LR F1:     {lr_grid_search.best_score_:.4f}")
 print(f"Best LR Params: {lr_grid_search.best_params_}")
 
 # ── 5b. Linear SVC ───────────────────────────────────────────────────────────
+# Tuning: C (regularization strength) and loss (hinge vs squared_hinge).
+# max_iter fixed at 2000.
 
 lsvc_tune_pipeline = clone(base_pipeline).set_params(
     clf=LinearSVC(random_state=RANDOM_STATE)
@@ -652,6 +707,8 @@ print(f"Best LinearSVC F1:     {lsvc_grid_search.best_score_:.4f}")
 print(f"Best LinearSVC Params: {lsvc_grid_search.best_params_}")
 
 # ── 5c. Random Forest ────────────────────────────────────────────────────────
+# Tuning: n_estimators, max_depth, min_samples_leaf, and max_features
+# (sqrt vs log2).
 
 rf_tune_pipeline = clone(base_pipeline).set_params(
     clf=RandomForestClassifier(random_state=RANDOM_STATE)
@@ -698,6 +755,9 @@ print(f"Best RF Params: {rf_grid_search.best_params_}")
 # print(f"Best XGB Params: {xgb_grid_search.best_params_}")
 
 # ── 5e. SGD ──────────────────────────────────────────────────────────────────
+# Tuning: loss (hinge / modified_huber / log_loss), alpha (regularization
+# strength), penalty (l2 / l1 / elasticnet), l1_ratio (only used when
+# penalty=elasticnet), and learning_rate schedule (optimal vs adaptive).
 
 sgd_tune_pipeline = clone(base_pipeline).set_params(
     clf=SGDClassifier(random_state=RANDOM_STATE)
@@ -751,9 +811,13 @@ tuning_results = pd.DataFrame(
         },
     ]
 )
+# Pull each model's pre-tuning macro-F1 from the Section 4 classifier sweep
+# and join it onto tuning_results so we can show before/after side-by-side.
 baseline_f1 = classifier_results.set_index("pipeline")["f1_mean"]
 tuning_results["before_f1"] = tuning_results["model"].map(baseline_f1)
+# Delta = how much grid search improved over the default-hyperparameter run.
 tuning_results["delta"] = tuning_results["best_f1"] - tuning_results["before_f1"]
+# Reorder columns and sort by tuned score so the best model is on top.
 tuning_results = tuning_results[
     ["model", "before_f1", "best_f1", "delta", "best_params"]
 ].sort_values("best_f1", ascending=False)

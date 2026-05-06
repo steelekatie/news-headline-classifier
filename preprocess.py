@@ -1,7 +1,31 @@
 # =============================================================================
-# PREPROCESS
+# preprocess.py — shared preprocessing for Track B (Fox vs NBC headlines).
 # =============================================================================
-# Updated with additional cleaning for scraped headlines
+# Purpose:
+#   - Expose `prepare_data(csv_path) -> (X, y)` per the course's submission
+#     contract: the grading backend imports this module to load + clean
+#     the hidden test set before passing headlines to Model.predict().
+#   - Provide reusable building blocks that model.py and analysis.py
+#     both depend on:
+#       - clean_hed():     unicode/punct normalization, money + end-period
+#                          tokenization, lowercasing — applied inside the
+#                          word/char TF-IDF branches.
+#       - extract_style() + style_branch: 12 handcrafted features (caps,
+#                          punctuation, "U.S." vs "US", title case,
+#                          end-period, hyphenation, etc.) operating on
+#                          RAW text — the style branch in Hybrid_v2_style.
+#       - STYLE_FEATURE_NAMES: column names exposed via feature_names_out
+#                          for downstream coefficient inspection.
+#
+# prepare_data() also performs EDA-driven filtering (Spanish-language drop,
+# 25–140 char and >=4-word bounds, page/footer artifact removal, dedupe).
+# This filtering is applied at training time AND grading time, so train/test
+# distributions stay consistent.
+#
+# Companion files:
+#   model.py — submission entry point; consumes style_branch and prepare_data.
+#   analysis/analysis.py — dev notebook for feature/model selection.
+# =============================================================================
 
 import re
 import unicodedata
@@ -11,6 +35,8 @@ from sklearn.preprocessing import FunctionTransformer
 from sklearn.feature_extraction.text import CountVectorizer
 
 
+# Maps "smart"/curly unicode punctuation to ASCII so the same token shape
+# (e.g. "trump's" vs "trump’s") doesn't fragment our TF-IDF vocabulary.
 def repl_punct(text):
     """Standardizes unicode punctuation to ASCII equivalents."""
     punct_remap = {
@@ -25,12 +51,19 @@ def repl_punct(text):
     return text.translate(str.maketrans(punct_remap))
 
 
+# Collapses dollar/pound/euro/yen amounts (with optional scale words like
+# "million") into a single [MONEY] token so the model learns "headline mentions
+# money" instead of memorizing specific figures.
 def repl_money(text):
     """Replaces monetary references with a [MONEY] token."""
     money_ref = r"([$£€¥]\d+(?:\.\d+)?(?:[,\d+]+)?(?:\s?(?:hundred|thousand|million|billion|trillion|k|m|b|t))?)"
     return re.sub(money_ref, "[MONEY]", text, flags=re.IGNORECASE)
 
 
+# Full cleaning pipeline applied to text feeding the word/char TF-IDF branches:
+# unicode-normalize -> ASCII fold -> punctuation fix -> money tokenization ->
+# end-period tokenization -> lowercase -> strip residual non-alnum chars ->
+# collapse whitespace. Style features bypass this and read raw text instead.
 def clean_hed(text):
     """
     Cleans news headlines.
@@ -49,7 +82,9 @@ def clean_hed(text):
     return text
 
 
-# For style branch
+# Column names for the 12 handcrafted style features below — exposed via
+# feature_names_out so downstream code (e.g. coefficient inspection in
+# analysis.py) can label these features alongside the TF-IDF columns.
 STYLE_FEATURE_NAMES = [
     "len",
     "n_periods",
@@ -66,6 +101,9 @@ STYLE_FEATURE_NAMES = [
 ]
 
 
+# Computes the 12 style features as a numeric (n, 12) array. Operates on raw
+# text because casing, punctuation, and "U.S." vs "US" — exactly the signals
+# that distinguish Fox vs NBC house style — would be erased by clean_hed.
 def extract_style(series):
     """
     Returns float array of shape (n, 12) with handcrafted style features.
@@ -94,10 +132,14 @@ def extract_style(series):
     return features.values
 
 
+# Callback handed to FunctionTransformer's feature_names_out so the style
+# branch reports proper column names when wired into a FeatureUnion.
 def style_feature_names(self, input_features):
     return STYLE_FEATURE_NAMES
 
 
+# sklearn-friendly wrapper around extract_style — drops into a Pipeline /
+# FeatureUnion alongside the TF-IDF branches without custom transformer code.
 style_branch = FunctionTransformer(
     extract_style,
     feature_names_out=style_feature_names,
