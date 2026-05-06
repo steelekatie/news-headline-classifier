@@ -4,7 +4,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_here = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+REPO_ROOT = os.path.dirname(_here) if os.path.basename(_here) == "analysis" else _here
+sys.path.insert(0, REPO_ROOT)
+os.chdir(REPO_ROOT)
 
 from scipy.stats import chi2_contingency
 import re

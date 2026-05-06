@@ -5,7 +5,14 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_here = (
+    os.path.dirname(os.path.abspath(__file__))
+    if "__file__" in globals()
+    else os.getcwd()
+)
+REPO_ROOT = os.path.dirname(_here) if os.path.basename(_here) == "analysis" else _here
+sys.path.insert(0, REPO_ROOT)
+os.chdir(REPO_ROOT)
 
 from preprocess import prepare_data, clean_hed, style_branch, STYLE_FEATURE_NAMES
 
@@ -107,6 +114,17 @@ y_pred = model.predict(X_test_tfidf)
 accuracy = accuracy_score(y_test_base, y_pred)
 print(f"Accuracy: {accuracy:.4f}")
 print("Classification Report:\n", classification_report(y_test_base, y_pred))
+
+# Accuracy: 0.6442
+# Classification Report:
+#                precision    recall  f1-score   support
+
+#            0       0.60      0.80      0.69      2894
+#            1       0.72      0.50      0.59      3022
+
+#     accuracy                           0.64      5916
+#    macro avg       0.66      0.65      0.64      5916
+# weighted avg       0.66      0.64      0.64      5916
 
 
 # =============================================================================
