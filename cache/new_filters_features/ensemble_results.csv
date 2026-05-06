@@ -1,0 +1,4 @@
+pipeline,f1_mean,f1_std,acc_mean,acc_std
+Ensemble_Stack,0.803,0.0063,0.8051,0.0062
+Ensemble_Soft_3,0.8024,0.0053,0.8046,0.0051
+Ensemble_Soft_4,0.8013,0.0063,0.8036,0.0062
