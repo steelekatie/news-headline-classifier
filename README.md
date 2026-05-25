@@ -1,8 +1,12 @@
 # CIS 4190/5190 — News Source Classifier
 
-Final project for UPenn's Applied Machine Learning course (Track B), by
-**Katie Steele** and **Isaac Herman**. A binary text classifier that labels
-U.S. news headlines as **Fox News** (`1`) or **NBC News** (`0`).
+Final project for Penn's Applied Machine Learning course, by
+**Katie Steele** and **Isaac Herman**: A binary text classifier that predicts whether a
+U.S. news headline was sourced from **Fox News** (`1`) or **NBC News** (`0`).
+
+
+> **Note:** This is a fork of the [original project repository](https://github.com/iherman10/cis-5190-news-classifier),
+> extended to include the final written report.
 
 The shipped model is a stacking ensemble (Logistic Regression + LinearSVC +
 SGD + Random Forest, with an LR meta-learner) over a hybrid feature pipeline:
